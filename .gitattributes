@@ -1,3 +1,6 @@
 macos/** text eol=lf
 linux/** text eol=lf
 .github/** text eol=lf
+*.png binary
+*.ico binary
+*.icns binary

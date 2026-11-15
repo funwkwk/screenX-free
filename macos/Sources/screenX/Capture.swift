@@ -95,7 +95,9 @@ enum ImageTools {
     }
 
     static func withBorder(_ image: NSImage) -> NSImage {
-        let t = CGFloat(Prefs.borderSize)
+        // the setting is in pixels; the image is drawn in points (2 pixels per point on Retina)
+        let px = pixelSize(image)
+        let t = CGFloat(Prefs.borderSize) * image.size.width / CGFloat(max(1, px.w))
         let color = NSColor(hex: Prefs.borderColor) ?? .systemRed
         return render(like: image) { r in
             draw(image, in: r)

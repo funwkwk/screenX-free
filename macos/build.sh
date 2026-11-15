@@ -14,16 +14,19 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/screenX"
 sed "s/__VERSION__/$VERSION/g" Info.plist > "$APP/Contents/Info.plist"
 
-# app icon from the shared PNG
+# app icon from the 1024 px macOS master (logo with the standard macOS icon padding)
+ICON_SRC=../Assets/screenX-macos.png
 ICONSET="build/AppIcon.iconset"
 mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do
   d=$((s * 2))
-  sips -z "$s" "$s" ../Assets/screenX.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-  sips -z "$d" "$d" ../Assets/screenX.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+  sips -z "$s" "$s" "$ICON_SRC" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+  sips -z "$d" "$d" "$ICON_SRC" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET"
+# menu bar logo (template image)
+cp MenuIcon.png MenuIcon@2x.png "$APP/Contents/Resources/"
 
 # Sign with a real identity when the Mac has one (SCREENX_SIGN_IDENTITY, else the first Developer ID / Apple
 # Development certificate). macOS ties the Screen Recording permission to the signature: an ad-hoc signature

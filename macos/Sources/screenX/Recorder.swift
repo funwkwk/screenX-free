@@ -7,10 +7,11 @@ final class KeyWindow: NSWindow {
 }
 
 /// Full-screen layer for the recording area. Before recording the screen is dimmed outside the area, which can
-/// be moved, resized from its corners / edges or redrawn. While recording only a dashed red frame is shown.
+/// be moved (drag inside), resized from its corners / edges or redrawn (drag outside). While recording only a
+/// dashed red frame is shown.
 final class RegionView: NSView {
     var region: NSRect
-    var recording = false { didSet { needsDisplay = true } }
+    var recording = false { didSet { needsDisplay = true; window?.invalidateCursorRects(for: self) } }
     var paused = false { didSet { needsDisplay = true } }
     var onChange: (() -> Void)?
 
@@ -19,6 +20,7 @@ final class RegionView: NSView {
     private var edges: (l: Bool, r: Bool, t: Bool, b: Bool) = (false, false, false, false)
     private var startPoint = NSPoint.zero
     private var startRegion = NSRect.zero
+    private let minSize: CGFloat = 40
 
     init(frame: NSRect, region: NSRect) {
         self.region = region
@@ -26,6 +28,9 @@ final class RegionView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    // the layer is never key, so the first click must already start a drag
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
         if recording {
@@ -41,6 +46,11 @@ final class RegionView: NSView {
         dim.appendRect(region)
         dim.windingRule = .evenOdd
         dim.fill()
+        // macOS passes clicks on fully transparent pixels through to the app below, so the area gets an
+        // invisible tint: without it dragging inside the area (move) never reached this view.
+        // The layer is excluded from capture (sharingType = .none), so this never shows in the video.
+        NSColor(white: 0, alpha: 0.01).setFill()
+        NSBezierPath(rect: region.insetBy(dx: -12, dy: -12)).fill()
 
         NSColor.white.setStroke()
         let frame = NSBezierPath(rect: region)
@@ -53,7 +63,7 @@ final class RegionView: NSView {
         c.lineWidth = 5
         c.lineCapStyle = .round
         c.lineJoinStyle = .round
-        let k: CGFloat = 18
+        let k: CGFloat = min(18, region.width / 3, region.height / 3)
         for (x, sx) in [(region.minX, CGFloat(1)), (region.maxX, CGFloat(-1))] {
             for (y, sy) in [(region.minY, CGFloat(1)), (region.maxY, CGFloat(-1))] {
                 c.move(to: NSPoint(x: x, y: y + k * sy))
@@ -61,34 +71,85 @@ final class RegionView: NSView {
                 c.line(to: NSPoint(x: x + k * sx, y: y))
             }
         }
-        for x in [region.minX, region.maxX] {
-            c.move(to: NSPoint(x: x, y: region.midY - 16))
-            c.line(to: NSPoint(x: x, y: region.midY + 16))
+        if region.height > 90 {
+            for x in [region.minX, region.maxX] {
+                c.move(to: NSPoint(x: x, y: region.midY - 16))
+                c.line(to: NSPoint(x: x, y: region.midY + 16))
+            }
         }
-        for y in [region.minY, region.maxY] {
-            c.move(to: NSPoint(x: region.midX - 16, y: y))
-            c.line(to: NSPoint(x: region.midX + 16, y: y))
+        if region.width > 90 {
+            for y in [region.minY, region.maxY] {
+                c.move(to: NSPoint(x: region.midX - 16, y: y))
+                c.line(to: NSPoint(x: region.midX + 16, y: y))
+            }
         }
         c.stroke()
+        drawSizeLabel()
     }
+
+    /// "1920 × 1080" (pixels) in the top-left corner of the area.
+    private func drawSizeLabel() {
+        let k = window?.backingScaleFactor ?? 2
+        let text = "\(Int((region.width * k).rounded())) × \(Int((region.height * k).rounded()))"
+        let attr = NSAttributedString(string: text, attributes: [
+            .foregroundColor: NSColor.white, .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
+        ])
+        let s = attr.size()
+        let box = NSRect(x: region.minX + 8, y: region.maxY - s.height - 18, width: s.width + 16, height: s.height + 8)
+        guard box.maxX < region.maxX - 4, box.minY > region.minY + 4 else { return }
+        NSColor(white: 0.08, alpha: 0.72).setFill()
+        NSBezierPath(roundedRect: box, xRadius: box.height / 2, yRadius: box.height / 2).fill()
+        attr.draw(at: NSPoint(x: box.minX + 8, y: box.minY + 4))
+    }
+
+    // ---- cursor
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for a in trackingAreas { removeTrackingArea(a) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .cursorUpdate, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+    }
+
+    /// Which edges are under `p` (`t` = the top edge on screen, region.maxY).
+    private func edgeHit(_ p: NSPoint) -> (l: Bool, r: Bool, t: Bool, b: Bool)? {
+        let s: CGFloat = 12
+        let nearL = abs(p.x - region.minX) <= s, nearR = abs(p.x - region.maxX) <= s
+        let nearB = abs(p.y - region.minY) <= s, nearT = abs(p.y - region.maxY) <= s
+        guard region.insetBy(dx: -s, dy: -s).contains(p), nearL || nearR || nearT || nearB else { return nil }
+        return (nearL, nearR && !nearL, nearT, nearB && !nearT)
+    }
+
+    private func cursor(at p: NSPoint) -> NSCursor {
+        if recording { return .arrow }
+        switch drag {
+        case .move: return .closedHand
+        case .new: return .crosshair
+        case .resize: return ResizeCursor.make(left: edges.l, right: edges.r, top: edges.t, bottom: edges.b)
+        case .none: break
+        }
+        if let e = edgeHit(p) { return ResizeCursor.make(left: e.l, right: e.r, top: e.t, bottom: e.b) }
+        return region.contains(p) ? .openHand : .crosshair
+    }
+
+    override func cursorUpdate(with event: NSEvent) { cursor(at: convert(event.locationInWindow, from: nil)).set() }
+    override func mouseMoved(with event: NSEvent) { cursor(at: convert(event.locationInWindow, from: nil)).set() }
+
+    // ---- mouse
 
     override func mouseDown(with event: NSEvent) {
         guard !recording else { return }
         let p = convert(event.locationInWindow, from: nil)
         startPoint = p
         startRegion = region
-        let s: CGFloat = 12
-        let nearL = abs(p.x - region.minX) <= s, nearR = abs(p.x - region.maxX) <= s
-        let nearB = abs(p.y - region.minY) <= s, nearT = abs(p.y - region.maxY) <= s
-        let within = region.insetBy(dx: -s, dy: -s).contains(p)
-        if within && (nearL || nearR || nearT || nearB) {
+        if let e = edgeHit(p) {
             drag = .resize
-            edges = (nearL, nearR && !nearL, nearT, nearB && !nearT)
+            edges = e
         } else if region.contains(p) {
             drag = .move
         } else {
             drag = .new
         }
+        cursor(at: p).set()
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -105,13 +166,13 @@ final class RegionView: NSView {
             r.origin.y = min(max(r.origin.y, 0), bounds.height - r.height)
             region = r
         case .resize:
+            // the dragged edge stops short of the opposite one, so the area never flips or collapses
             var l = startRegion.minX, r = startRegion.maxX, b = startRegion.minY, t = startRegion.maxY
-            if edges.l { l = p.x }
-            if edges.r { r = p.x }
-            if edges.t { t = p.y }
-            if edges.b { b = p.y }
-            let nr = NSRect(x: min(l, r), y: min(b, t), width: abs(r - l), height: abs(t - b))
-            if nr.width >= 40 && nr.height >= 40 { region = nr }
+            if edges.l { l = min(p.x, r - minSize) }
+            if edges.r { r = max(p.x, l + minSize) }
+            if edges.t { t = max(p.y, b + minSize) }
+            if edges.b { b = min(p.y, t - minSize) }
+            region = NSRect(x: l, y: b, width: r - l, height: t - b)
         case .none:
             break
         }
@@ -120,8 +181,10 @@ final class RegionView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if drag == .new && (region.width < 40 || region.height < 40) { region = startRegion }
+        if drag == .new && (region.width < minSize || region.height < minSize) { region = startRegion }
+        region = region.integral
         drag = .none
+        cursor(at: convert(event.locationInWindow, from: nil)).set()
         needsDisplay = true
         onChange?()
     }
@@ -147,14 +210,17 @@ final class Recorder: NSObject, AVCaptureFileOutputRecordingDelegate {
     private var timer: Timer?
     private var discard = false
     private var keyMonitor: Any?
+    private var backToSnip = false
 
-    static func start() {
+    static func start(backToSnip: Bool = false) {
         if let r = current {
             r.bar.makeKeyAndOrderFront(nil)
             return
         }
-        guard let screen = NSScreen.main else { return }
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main else { return }
         let r = Recorder(screen: screen)
+        r.backToSnip = backToSnip
         current = r
         r.show()
     }
@@ -177,6 +243,7 @@ final class Recorder: NSObject, AVCaptureFileOutputRecordingDelegate {
         layer.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         layer.isReleasedWhenClosed = false
         layer.contentView = view
+        layer.acceptsMouseMovedEvents = true
         view.onChange = { [weak self] in self?.placeBar() }
 
         bar.isOpaque = false
@@ -275,13 +342,20 @@ final class Recorder: NSObject, AVCaptureFileOutputRecordingDelegate {
 
     /// Centre the bar above the area (below or inside it when there is no room).
     private func placeBar() {
+        // Below the area, like the macOS screenshot bar; above it only when there is no room below, and never
+        // under the menu bar / camera notch. Inside the area's bottom edge when it fills the screen.
         let f = screen.frame, r = view.region, size = bar.frame.size
+        let notch = max(screen.safeAreaInsets.top, f.maxY - screen.visibleFrame.maxY)
+        let top = f.maxY - notch - 8, bottom = f.minY + 8
         var x = f.minX + r.midX - size.width / 2
-        var y = f.minY + r.maxY + 8
-        if y + size.height > f.maxY { y = f.minY + r.minY - size.height - 8 }
-        if y < f.minY { y = f.minY + r.maxY - size.height - 8 }
-        x = min(max(x, f.minX + 4), f.maxX - size.width - 4)
-        bar.setFrameOrigin(NSPoint(x: x, y: y))
+        var y = f.minY + r.minY - size.height - 14
+        if y < bottom {
+            y = f.minY + r.maxY + 14
+            if y + size.height > top { y = f.minY + r.minY + 14 }
+        }
+        y = min(max(y, bottom), top - size.height)
+        x = min(max(x, f.minX + 8), f.maxX - size.width - 8)
+        bar.setFrameOrigin(NSPoint(x: x.rounded(), y: y.rounded()))
     }
 
     // =================================================================== actions
@@ -292,7 +366,9 @@ final class Recorder: NSObject, AVCaptureFileOutputRecordingDelegate {
     }
 
     @objc private func cancel() {
-        if session != nil { stopAndDiscard() } else { close() }
+        if session != nil { stopAndDiscard(); return }
+        close()
+        if backToSnip { AppDelegate.shared.snip(Prefs.snipMode) }
     }
 
     @objc private func startClicked() {

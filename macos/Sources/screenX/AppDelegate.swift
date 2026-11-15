@@ -7,12 +7,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var sampler: NSColorSampler?
+    /// False when another app already owns Control-Shift-S (shown in Settings).
+    private(set) var hotKeyRegistered = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
         buildMainMenu()
         buildStatusItem()
-        let ok = HotKey.registerControlShiftS { [weak self] in self?.snip(Prefs.snipMode) }
+        let ok = HotKey.registerControlShiftS { [weak self] in self?.snip(Prefs.snipMode, delay: Prefs.snipDelay) }
+        hotKeyRegistered = ok
         Toast.show(ok ? "screenX is running. Press Control-Shift-S to snip, or use the menu-bar icon."
                       : "screenX is running. Control-Shift-S is taken by another app; use the menu-bar icon.")
         // same switches as the Windows build: screenX --snip | --fullscreen | --record | --color | --text
@@ -23,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else if args.contains("--record") { startRecording() }
         else if args.contains("--color") { pickColour() }
         else if args.contains("--text") { extractText() }
+        else if args.contains("--settings") { openSettings() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -61,7 +65,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            if let img = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "screenX") {
+            // the screenX logo as a template image (MenuIcon.png + @2x in the bundle), so it follows the menu bar's tint
+            if let img = Bundle.main.image(forResource: "MenuIcon") {
+                img.isTemplate = true
+                img.size = NSSize(width: 18, height: 18)
+                img.accessibilityDescription = "screenX"
+                button.image = img
+            } else if let img = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "screenX") {
                 button.image = img
             } else {
                 button.title = "screenX"
@@ -117,14 +127,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let where_ = url.map { " and saved to \($0.deletingLastPathComponent().lastPathComponent)" } ?? ""
             Toast.show("Snip copied\(where_). Click here to edit it.") {
-                EditorController(image: image, savedURL: url).show()
+                AppDelegate.shared.openInEditor(image, savedURL: url)
             }
         }, onCancel: {
             editor?.show() // cancelled with Esc: bring the editor back
         })
     }
 
-    @objc private func menuSnip() { snip(Prefs.snipMode) }
+    /// "Multiple windows" off: the snip replaces the one in the open editor (unless that one has unsaved
+    /// edits the user wants to be asked about). On: every snip gets its own window.
+    func openInEditor(_ image: NSImage, savedURL: URL?) {
+        if !Prefs.multipleWindows, let editor = EditorController.all.last, !(Prefs.askToSave && editor.isDirty) {
+            editor.load(image, savedURL: savedURL)
+            editor.show()
+        } else {
+            EditorController(image: image, savedURL: savedURL).show()
+        }
+    }
+
+    @objc private func menuSnip() { snip(Prefs.snipMode, delay: Prefs.snipDelay) }
     @objc private func menuWindowSnip() { snip(.window) }
     @objc private func menuFullSnip() { snip(.fullscreen) }
 
@@ -138,6 +159,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func startRecording() {
         MainActor.assumeIsolated { Recorder.start() }
+    }
+
+    /// Recording opened from the snip toolbar: closing it (before recording) goes back to that toolbar.
+    func recordFromSnip() {
+        MainActor.assumeIsolated { Recorder.start(backToSnip: true) }
     }
 
     @objc func pickColour() {
