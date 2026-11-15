@@ -27,6 +27,6 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>screenX records your microphone only when you switch it on for a screen recording.</string>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright (c) 2026 funwkwk. MIT licence.</string>
+    <string>Copyright (c) 2026 funwkwk. GPL-3.0 licence.</string>
 </dict>
 </plist>
