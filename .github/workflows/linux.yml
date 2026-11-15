@@ -1,0 +1,33 @@
+name: Linux self-test
+
+on:
+  push:
+    paths:
+      - 'linux/**'
+      - '.github/workflows/linux.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install what screenX needs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-pyqt6 ffmpeg tesseract-ocr x11-utils xvfb
+
+      - name: Self-test on a virtual X11 screen
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24" bash linux/run.sh --selftest "$RUNNER_TEMP/selftest"
+
+      - name: Upload the rendered windows
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenX-linux-selftest
+          path: ${{ runner.temp }}/selftest
