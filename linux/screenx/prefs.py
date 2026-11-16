@@ -10,6 +10,7 @@ from PyQt6.QtCore import QStandardPaths
 
 SNIP_MODES = [("rectangle", "Rectangle"), ("window", "Window"), ("fullscreen", "Full screen"), ("freeform", "Freeform")]
 SNIP_DELAYS = [(0, "No delay"), (3, "3 seconds"), (5, "5 seconds"), (10, "10 seconds")]
+RECORD_COUNTDOWNS = [(0, "Off"), (3, "3 seconds"), (5, "5 seconds"), (10, "10 seconds")]
 
 
 def config_dir() -> str:
@@ -32,13 +33,18 @@ def _defaults() -> dict:
         "borderColor": "#E81123",
         "borderSize": 2,
         "recordMic": False,
+        "recordSystemAudio": True,
         "recordCursor": True,
         "recordFps": 30,
+        "recordCountdown": 3,  # seconds before a recording starts; 0 = off
         "screenshotFolder": os.path.join(_user_dir(QStandardPaths.StandardLocation.PicturesLocation, "Pictures"), "screenX"),
         "videoFolder": os.path.join(_user_dir(QStandardPaths.StandardLocation.MoviesLocation, "Videos"), "screenX"),
         "snipDelay": 0,
         "snipMode": "rectangle",
         "quickMarkup": True,
+        "shutterSound": True,
+        "snipShortcut": "Ctrl+Shift+S",  # "" = no shortcut
+        "recordShortcut": "",
     }
 
 
@@ -102,6 +108,11 @@ class Prefs:
     @classmethod
     def fps(cls) -> int:
         return max(5, min(60, int(cls.get("recordFps"))))
+
+    @classmethod
+    def countdown(cls) -> int:
+        value = cls.get("recordCountdown")
+        return value if value in dict(RECORD_COUNTDOWNS) else 3
 
     @classmethod
     def border_size(cls) -> int:

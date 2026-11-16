@@ -1,7 +1,7 @@
 import AppKit
 
 enum Tool: Int {
-    case pen, highlighter, eraser, rectangle, ellipse, line, arrow, crop
+    case pen, highlighter, eraser, rectangle, ellipse, line, arrow, crop, move
 }
 
 /// One mark-up on the snip: a freehand stroke or a two-point shape. Coordinates are image points, top-left origin.
@@ -20,6 +20,12 @@ struct Mark {
             minY = min(minY, p.y); maxY = max(maxY, p.y)
         }
         return NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    func offsetBy(_ dx: CGFloat, _ dy: CGFloat) -> Mark {
+        var m = self
+        m.points = points.map { NSPoint(x: $0.x + dx, y: $0.y + dy) }
+        return m
     }
 
     func draw() {
@@ -223,6 +229,8 @@ final class CanvasView: NSView {
             current = Mark(kind: .line, points: [p, p], color: penColor, width: strokeWidth)
         case .arrow:
             current = Mark(kind: .arrow, points: [p, p], color: penColor, width: strokeWidth)
+        case .move:
+            break
         }
         needsDisplay = true
     }

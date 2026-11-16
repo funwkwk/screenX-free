@@ -36,6 +36,8 @@ Remove it again with `bash linux/uninstall.sh`.
 | Wayland: screen grabs | `xdg-desktop-portal` and `python3-gi` (or `grim` on Sway / Hyprland) |
 | Wayland: clipboard | `wl-clipboard` |
 | Wayland: screen recording | `gstreamer1.0-pipewire`, `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-ugly` (or `wf-recorder` on Sway / Hyprland) |
+| Recording sound (system audio, microphone) | PulseAudio or PipeWire with `pipewire-pulse`, and `pulseaudio-utils` (for `pactl`) |
+| Shutter sound | `python3-pyqt6.qtmultimedia`, or any of `pw-play` / `paplay` / `aplay` |
 
 Everything except PyQt6 is optional: a tool that misses its helper says which package to install.
 **Settings → Helper programs** shows what was found.
@@ -57,12 +59,27 @@ screenx --background   start in the tray without a window
 
 The options also work while screenX is already running, so they can be bound to keys.
 
-### The Ctrl+Shift+S shortcut
+### Shortcuts
 
-- **X11**: works by itself while screenX is running.
-- **Wayland**: apps are not allowed to listen for keys. On GNOME, open **Settings** in screenX and press
-  *Add Ctrl+Shift+S to the GNOME keyboard shortcuts*. On other desktops add a custom shortcut in the
-  keyboard settings that runs `screenx --snip`.
+**Settings → Shortcuts** has two: *New snip* (Ctrl+Shift+S unless you change it) and *Record screen* (none
+until you set one; pressing it again while recording stops and saves). Click a field and press the keys: a
+shortcut needs Ctrl, Alt, Shift or Super plus another key (Print also works alone); Esc cancels, *Reset* /
+*Clear* goes back to the default.
+
+- **X11**: the shortcuts work by themselves while screenX is running. When another app already uses a
+  combination, Settings says so and keeps the previous one.
+- **Wayland**: apps are not allowed to listen for keys. On GNOME, press *Add these shortcuts to the GNOME
+  keyboard shortcuts* once; after that, changing a shortcut in screenX updates GNOME too. On other desktops
+  add custom shortcuts in the keyboard settings that run `screenx --snip` and `screenx --record`
+  (Settings shows the exact command).
+
+### Sound
+
+- A shutter sound plays when a snip is taken (Settings → *Play a sound when taking a snip*).
+- Recordings can include **system audio** (what is playing) and the **microphone**: the speaker and
+  microphone buttons on the recording bar, with their defaults in Settings. With both on they are mixed into
+  one track. On Sway / Hyprland (wf-recorder, which takes one sound source) screenX mixes them through a
+  temporary PulseAudio null sink called `screenX-recording` that is removed when the recording ends.
 
 ### Keys in the overlay
 
@@ -83,7 +100,7 @@ Settings are stored in `~/.config/screenX/settings.json`.
 - **Wayland** limits what any app can do. The desktop may ask for permission before a screen grab; window
   snips fall back to dragging an area (apps cannot see where other windows are); notifications appear where
   the desktop puts them; a recording captures the screen you pick in the desktop's own dialog, cropped to
-  the area you drew, without the red frame and the countdown.
+  the area you drew, without the red frame (the countdown runs before the desktop's dialog).
 - Full-screen snips and the overlay cover the screen the pointer is on.
 - No emoji stamps and no share sheet yet.
 - When a recording is paused and resumed, the parts are joined with ffmpeg.
@@ -109,6 +126,7 @@ every push that touches `linux/` (`.github/workflows/linux.yml`).
 | `screenx/recorder.py` | Recording area, control bar, ffmpeg / wf-recorder / portal back ends |
 | `screenx/capture.py` | Screen grabs, window list, Tesseract, Google Lens |
 | `screenx/canvas.py` | Mark-ups and the resizable selection |
-| `screenx/hotkey.py` | Ctrl+Shift+S on X11, the GNOME shortcut on Wayland |
+| `screenx/hotkey.py` | Global shortcuts: key grabs on X11, GNOME custom shortcuts on Wayland |
+| `screenx/sound.py` | The shutter sound |
 | `screenx/settings.py`, `prefs.py` | Settings window and storage |
 | `screenx/icons.py`, `common.py` | Icons, clipboard, notifications |

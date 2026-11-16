@@ -1,12 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Screen recording.
 
-    Ready:      [● Start] 00:00:00 [mic] [✕]        (over the frozen screen, area adjustable)
+    Ready:      [● Start] 00:00:00 [speaker] [mic] [✕]   (over the frozen screen, area adjustable)
+    Countdown:  Starting in 3… [✕]                       (area fixed, big number in its middle; Esc cancels)
     Recording:  [❚❚] [■] 00:00:09 [trash]            (small floating bar; a red frame marks the area on X11)
 
 X11 records with `ffmpeg -f x11grab`. Wayland has no such grab: wlroots desktops (Sway, Hyprland) use
 wf-recorder, GNOME and KDE use the ScreenCast portal + PipeWire + GStreamer (the desktop asks which
 screen to share). Pausing ends a segment; the segments are joined with ffmpeg when the recording stops.
+
+Sound comes from PulseAudio / PipeWire (pipewire-pulse): the microphone is the default source, system audio
+the monitor of the default sink. With both on they are mixed into one track (ffmpeg amix, GStreamer
+audiomixer; wf-recorder takes a single device, so screenX loads a temporary null sink that both are looped
+into and records its monitor, and unloads it when the recording ends).
 """
 from __future__ import annotations
 
@@ -17,7 +23,7 @@ import subprocess
 import tempfile
 import time
 
-from PyQt6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer
+from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, QVariantAnimation
 from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPen, QRegion
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
@@ -42,20 +48,112 @@ def clock(seconds: float) -> str:
 
 # ====================================================================== backends
 
-def ffmpeg_command(display: str, x: int, y: int, w: int, h: int, fps: int, cursor: bool, mic: bool, path: str) -> list:
+# ---------------------------------------------------------------------- sound
+
+MIX_SINK = "screenx_mix"
+
+
+def _pactl(*args: str) -> str | None:
+    if not which("pactl"):
+        return None
+    try:
+        res = subprocess.run(["pactl", *args], timeout=4, capture_output=True, text=True,
+                             env={**os.environ, "LC_ALL": "C"})
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return res.stdout.strip() if res.returncode == 0 else None
+
+
+def audio_problem() -> str:
+    """Why sound cannot be recorded here ("" when it can). Shown as the tooltip of the disabled sound buttons."""
+    if which("pactl"):
+        if _pactl("info") is not None:
+            return ""
+        return "No PulseAudio or PipeWire sound server is running, so sound cannot be recorded."
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    if os.environ.get("PULSE_SERVER") or (runtime and os.path.exists(os.path.join(runtime, "pulse", "native"))):
+        return ""  # a sound server is there; only pactl is missing (system audio uses @DEFAULT_MONITOR@)
+    return "Recording sound needs PulseAudio or PipeWire (pipewire-pulse) and pactl (package pulseaudio-utils)."
+
+
+def _default(kind: str) -> str | None:
+    """The default sink or source name ("Sink" / "Source")."""
+    name = _pactl(f"get-default-{kind.lower()}")  # pactl 15 and newer
+    if name:
+        return name
+    for line in (_pactl("info") or "").splitlines():
+        if line.startswith(f"Default {kind}:"):
+            return line.split(":", 1)[1].strip() or None
+    return None
+
+
+def default_monitor() -> str:
+    """The source that carries what is playing: the monitor of the default output."""
+    sink = _default("Sink")
+    return sink + ".monitor" if sink else "@DEFAULT_MONITOR@"
+
+
+def _unload_mix() -> None:
+    lines = (_pactl("list", "short", "modules") or "").splitlines()
+    ids = [line.split()[0] for line in lines if MIX_SINK in line and line.split()]
+    for module in sorted(ids, key=lambda i: -int(i) if i.isdigit() else 0):  # loopbacks before the sink
+        _pactl("unload-module", module)
+
+
+def load_mix(monitor: str) -> bool:
+    """A temporary null sink with system audio and the microphone looped into it, for recorders that take a
+    single audio device. Its monitor is `MIX_SINK.monitor`. Undo with `_unload_mix()`."""
+    _unload_mix()  # left over from a crash
+    mic = _default("Source")
+    if not mic:
+        return False
+    if _pactl("load-module", "module-null-sink", f"sink_name={MIX_SINK}",
+              "sink_properties=device.description=screenX-recording") is None:
+        return False
+    for source in (monitor, mic):
+        if _pactl("load-module", "module-loopback", f"source={source}", f"sink={MIX_SINK}", "latency_msec=20") is None:
+            _unload_mix()
+            return False
+    return True
+
+
+def ffmpeg_command(display: str, x: int, y: int, w: int, h: int, fps: int, cursor: bool, mic: bool, path: str,
+                   system: str = "") -> list:
+    """`system` is the PulseAudio source for system audio ("" = none), `mic` adds the default source."""
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
            "-f", "x11grab", "-framerate", str(fps), "-draw_mouse", "1" if cursor else "0",
            "-video_size", f"{w}x{h}", "-i", f"{display}+{x},{y}"]
-    if mic:
-        cmd += ["-f", "pulse", "-i", "default"]
+    sources = ([system] if system else []) + (["default"] if mic else [])
+    for source in sources:
+        cmd += ["-thread_queue_size", "1024", "-f", "pulse", "-i", source]
+    if len(sources) == 2:
+        # amix halves each input; volume=2 brings them back to their own level
+        cmd += ["-filter_complex", "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0,volume=2[a]",
+                "-map", "0:v", "-map", "[a]"]
     cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
-    if mic:
+    if sources:
         cmd += ["-c:a", "aac", "-b:a", "128k"]
     return cmd + ["-movflags", "+faststart", path]
 
 
+def gst_audio(mic: bool, system: str) -> list:
+    """gst-launch elements that feed the sound into the muxer named "mux"."""
+    sources = ([["pulsesrc", f"device={system}"]] if system else []) + ([["pulsesrc"]] if mic else [])
+    encode = ["audioconvert", "!", "audioresample", "!", "opusenc", "!", "queue", "!", "mux."]
+    if not sources:
+        return []
+    if len(sources) == 1:
+        return [*sources[0], "!", *encode]
+    out = ["audiomixer", "name=amix", "!", *encode]
+    for src in sources:
+        out += [*src, "!", "audioconvert", "!", "audioresample", "!", "audio/x-raw,rate=48000,channels=2",
+                "!", "queue", "!", "amix."]
+    return out
+
+
 class Backend:
     ext = "mp4"
+    note = ""  # shown once the recording runs (for example: sound recorded only in part)
 
     def __init__(self):
         self.proc: subprocess.Popen | None = None
@@ -125,13 +223,14 @@ class Backend:
 
 
 class FfmpegX11(Backend):
-    def __init__(self, rect: tuple, fps: int, cursor: bool, mic: bool):
+    def __init__(self, rect: tuple, fps: int, cursor: bool, mic: bool, system: str = ""):
         super().__init__()
-        self.rect, self.fps, self.cursor, self.mic = rect, fps, cursor, mic
+        self.rect, self.fps, self.cursor, self.mic, self.system = rect, fps, cursor, mic, system
 
     def command(self, path: str) -> list:
         x, y, w, h = self.rect
-        return ffmpeg_command(os.environ.get("DISPLAY", ":0"), x, y, w, h, self.fps, self.cursor, self.mic, path)
+        return ffmpeg_command(os.environ.get("DISPLAY", ":0"), x, y, w, h, self.fps, self.cursor, self.mic, path,
+                              self.system)
 
     def ask_to_finish(self, p: subprocess.Popen) -> None:
         p.stdin.write(b"q")  # ffmpeg finishes the file cleanly on "q"
@@ -139,21 +238,44 @@ class FfmpegX11(Backend):
 
 
 class WfRecorder(Backend):
-    def __init__(self, rect: tuple, mic: bool):
+    def __init__(self, rect: tuple, mic: bool, system: str = ""):
         super().__init__()
-        self.rect, self.mic = rect, mic
+        self.rect, self.mic, self.system = rect, mic, system
+        self.mixed = False
+        self.device = system  # "" with the microphone alone: wf-recorder's -a takes the default source
+
+    def prepare(self) -> bool:
+        if self.mic and self.system:
+            self.mixed = load_mix(self.system)
+            # without the mix (no pactl, or the modules would not load) system audio alone is recorded
+            self.device = MIX_SINK + ".monitor" if self.mixed else self.system
+            if not self.mixed:
+                self.note = "wf-recorder takes one sound source and the two could not be mixed: " \
+                            "recording system audio without the microphone."
+        return True
 
     def command(self, path: str) -> list:
         x, y, w, h = self.rect
-        return ["wf-recorder", "-g", f"{x},{y} {w}x{h}", "-f", path] + (["-a"] if self.mic else [])
+        cmd = ["wf-recorder", "-g", f"{x},{y} {w}x{h}", "-f", path]
+        if self.device:
+            cmd.append(f"--audio={self.device}")
+        elif self.mic:
+            cmd.append("-a")
+        return cmd
+
+    def close(self) -> None:
+        super().close()
+        if self.mixed:
+            _unload_mix()
+            self.mixed = False
 
 
 class PortalGst(Backend):
     """ScreenCast portal -> PipeWire -> gst-launch-1.0. `region` is (x, y, w, h) as fractions of the screen."""
 
-    def __init__(self, region: tuple, fps: int, cursor: bool, mic: bool):
+    def __init__(self, region: tuple, fps: int, cursor: bool, mic: bool, system: str = ""):
         super().__init__()
-        self.region, self.fps, self.cursor, self.mic = region, fps, cursor, mic
+        self.region, self.fps, self.cursor, self.mic, self.system = region, fps, cursor, mic, system
         self.bus = None
         self.session = None
         self.node = None
@@ -236,9 +358,7 @@ class PortalGst(Backend):
                     f"right={max(0, sw - left - w)}", f"bottom={max(0, sh - top - h)}"]
         cmd += ["!", "videoconvert", "!", "video/x-raw,format=I420", "!", "queue", "!", *self.encoder,
                 "!", self.mux, "name=mux", "!", "filesink", f"location={path}"]
-        if self.mic:
-            cmd += ["pulsesrc", "!", "audioconvert", "!", "audioresample", "!", "opusenc", "!", "queue", "!", "mux."]
-        return cmd
+        return cmd + gst_audio(self.mic, self.system)
 
     def popen_options(self) -> dict:
         return {"pass_fds": [self.fd]}
@@ -299,7 +419,7 @@ RECORD_HELP_WAYLAND = ("Screen recording on Wayland needs GStreamer with PipeWir
 class RegionPicker(QWidget):
     """Frozen screen with the recording area: drag to draw it, drag inside to move, edges to resize."""
 
-    def __init__(self, screen, shot: QImage, on_start, on_cancel, can_mic: bool = True):
+    def __init__(self, screen, shot: QImage, on_start, on_cancel, audio_problem: str = ""):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowTitle("screenX")
@@ -313,15 +433,30 @@ class RegionPicker(QWidget):
         self.region: QRectF | None = None
         self.drag = None
         self.done = False
+        self.count = 0  # > 0 while the countdown runs
+        self.count_timer = QTimer(self)
+        self.count_timer.setInterval(1000)
+        self.count_timer.timeout.connect(self._count_tick)
+        self.count_anim = QVariantAnimation(self)  # 0 -> 1 over each second; paint derives scale and opacity
+        self.count_anim.setStartValue(0.0)
+        self.count_anim.setEndValue(1.0)
+        self.count_anim.setDuration(1000)
+        self.count_anim.valueChanged.connect(lambda _v: self.update())
 
         self.b_start = bar_button("dot", "Start recording (Enter)", self.start, text="Start")
         self.b_start.setIcon(icons.icon("dot", RED.name()))
         self.time = QLabel("00:00:00")
         self.time.setStyleSheet("color: white; font-size: 13px; padding: 0 6px; background: transparent;")
+        self.b_system = bar_button("speaker", "Record system audio (what's playing)", self._toggle_system,
+                                   checkable=True)
         self.b_mic = bar_button("mic", "Record the microphone", self._toggle_mic, checkable=True)
-        self.b_mic.setEnabled(can_mic)
-        b_close = bar_button("close", "Close (Esc)", self.cancel)
-        self.bar = Bar(self, [self.b_start, self.time, bar_separator(), self.b_mic, b_close])
+        for b in (self.b_system, self.b_mic):
+            b.setEnabled(not audio_problem)
+            if audio_problem:
+                b.setToolTip(audio_problem)
+        self.b_close = bar_button("close", "Close (Esc)", self.cancel)
+        self.separator = bar_separator()
+        self.bar = Bar(self, [self.b_start, self.time, self.separator, self.b_system, self.b_mic, self.b_close])
         self._refresh()
 
     def open(self) -> None:
@@ -343,11 +478,23 @@ class RegionPicker(QWidget):
         mic = bool(Prefs.get("recordMic")) and self.b_mic.isEnabled()
         self.b_mic.setChecked(mic)
         self.b_mic.setIcon(icons.icon("mic" if mic else "mic-off"))
+        system = bool(Prefs.get("recordSystemAudio")) and self.b_system.isEnabled()
+        self.b_system.setChecked(system)
+        self.b_system.setIcon(icons.icon("speaker" if system else "speaker-off"))
         self.b_start.setEnabled(self.region is not None)
+        counting = self.count > 0
+        for w in (self.b_start, self.separator, self.b_system, self.b_mic):
+            w.setVisible(not counting)
+        self.time.setText(f"Starting in {self.count}…" if counting else "00:00:00")
+        self.b_close.setToolTip("Cancel the countdown (Esc)" if counting else "Close (Esc)")
         self._place_bar()
 
     def _toggle_mic(self) -> None:
         Prefs.set("recordMic", not Prefs.get("recordMic"))
+        self._refresh()
+
+    def _toggle_system(self) -> None:
+        Prefs.set("recordSystemAudio", not Prefs.get("recordSystemAudio"))
         self._refresh()
 
     def _place_bar(self) -> None:
@@ -388,6 +535,31 @@ class RegionPicker(QWidget):
         r = self.region
         label = f"{even(round(r.width() * k))} × {even(round(r.height() * k))}"
         draw_pill(p, label, origin=QPointF(r.left() + 8, r.top() + 8))
+        if self.count > 0:
+            self._paint_badge(p, r.center())
+
+    def _paint_badge(self, p: QPainter, centre: QPointF) -> None:
+        """The countdown number: it grows in from 1.3x and fades in over 250 ms, and fades out in the last 150 ms."""
+        ms = float(self.count_anim.currentValue() or 0.0) * 1000
+        if ms < 250:
+            e = QEasingCurve(QEasingCurve.Type.OutCubic).valueForProgress(ms / 250)
+            scale, opacity = 1.3 - 0.3 * e, e
+        else:
+            scale, opacity = 1.0, 1.0 if ms < 850 else max(0.0, 1 - (ms - 850) / 150)
+        p.save()
+        p.setOpacity(opacity)
+        p.translate(centre)
+        p.scale(scale, scale)
+        p.setPen(QPen(QColor(255, 255, 255, 51), 1.5))
+        p.setBrush(QColor(0, 0, 0, 153))
+        p.drawEllipse(QPointF(0, 0), 75, 75)
+        font = QFont(p.font())
+        font.setPointSize(72)
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QColor("white"))
+        p.drawText(QRectF(-75, -75, 150, 150), Qt.AlignmentFlag.AlignCenter, str(self.count))
+        p.restore()
 
     # ---- mouse
 
@@ -395,7 +567,7 @@ class RegionPicker(QWidget):
         return QPointF(min(max(pos.x(), 0.0), float(self.width())), min(max(pos.y(), 0.0), float(self.height())))
 
     def mousePressEvent(self, e):
-        if e.button() != Qt.MouseButton.LeftButton:
+        if e.button() != Qt.MouseButton.LeftButton or self.count > 0:
             return
         pos = self._clamp(e.position())
         edges = edge_hit(pos, self.region) if self.region is not None else None
@@ -411,6 +583,9 @@ class RegionPicker(QWidget):
     def mouseMoveEvent(self, e):
         pos = self._clamp(e.position())
         d = self.drag
+        if self.count > 0:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
         if d is None:
             edges = edge_hit(pos, self.region) if self.region is not None else None
             inside = self.region is not None and self.region.contains(pos)
@@ -446,14 +621,50 @@ class RegionPicker(QWidget):
             super().keyPressEvent(e)
 
     def start(self) -> None:
-        if self.region is None or self.done:
+        if self.region is None or self.done or self.count > 0:
             return
+        seconds = Prefs.countdown()
+        if seconds <= 0:
+            self._go()
+            return
+        self.drag = None
+        self.count = seconds
+        self.count_anim.stop()
+        self.count_anim.start()
+        self.count_timer.start()
+        self._refresh()
+        self.update()
+
+    def _count_tick(self) -> None:
+        self.count -= 1
+        if self.count > 0:
+            self.count_anim.stop()
+            self.count_anim.start()
+            self._refresh()
+            self.update()
+            return
+        self.count_timer.stop()
+        self.count_anim.stop()
+        self._go()
+
+    def stop_countdown(self) -> None:
+        """Esc / Cancel during the countdown: back to the ready state (area adjustable again)."""
+        self.count_timer.stop()
+        self.count_anim.stop()
+        self.count = 0
+        self._refresh()
+        self.update()
+
+    def _go(self) -> None:
         self.done = True
         region, k, size = QRectF(self.region), self.k(), (self.width(), self.height())
         self.close()
         self.on_start(region, k, size)
 
     def cancel(self) -> None:
+        if self.count > 0:
+            self.stop_countdown()
+            return
         if self.done:
             return
         self.done = True
@@ -462,43 +673,6 @@ class RegionPicker(QWidget):
 
 
 # ====================================================================== small windows
-
-class Countdown(QWidget):
-    """3 - 2 - 1 in the middle of the area, then `done`."""
-
-    def __init__(self, centre: QPoint, done):
-        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
-                         | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.n = 3
-        self.done = done
-        self.setFixedSize(110, 110)
-        self.move(centre.x() - 55, centre.y() - 55)
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._tick)
-        self.timer.start(1000)
-
-    def _tick(self) -> None:
-        self.n -= 1
-        if self.n > 0:
-            self.update()
-            return
-        self.timer.stop()
-        done = self.done
-        self.close()
-        QTimer.singleShot(120, done)  # let the window disappear before the first frame is grabbed
-
-    def paintEvent(self, _event):
-        p = QPainter(self)
-        p.fillRect(self.rect(), QColor(24, 24, 24))
-        font = QFont(p.font())
-        font.setPixelSize(64)
-        font.setBold(True)
-        p.setFont(font)
-        p.setPen(QColor("white"))
-        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, str(self.n))
-
 
 class FrameWindow(QWidget):
     """Red dashed frame just outside the recorded area. Clicks pass through it (X11 only)."""
@@ -583,6 +757,7 @@ class Recorder(QObject):
         self.elapsed = 0.0
         self.since = 0.0
         self.screen = None
+        self.audio_problem = ""
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
 
@@ -600,7 +775,8 @@ class Recorder(QObject):
             toast(GRAB_HELP, seconds=6)
             return
         cls.current = r
-        r.picker = RegionPicker(r.screen, shot, r._begin, r._cancelled)
+        r.audio_problem = audio_problem()
+        r.picker = RegionPicker(r.screen, shot, r._begin, r._cancelled, r.audio_problem)
         r.picker.open()
 
     def _cancelled(self) -> None:
@@ -613,27 +789,27 @@ class Recorder(QObject):
     def _begin(self, region: QRectF, k: float, size: tuple) -> None:
         """`region` is in logical points of the screen, `k` screenshot pixels per point."""
         geo = self.screen.geometry()
-        mic = bool(Prefs.get("recordMic"))
+        sound = not self.audio_problem
+        mic = sound and bool(Prefs.get("recordMic"))
+        system = default_monitor() if sound and Prefs.get("recordSystemAudio") else ""
         cursor = bool(Prefs.get("recordCursor"))
         w, h = even(round(region.width() * k)), even(round(region.height() * k))
         if self.kind == "ffmpeg":
             # Qt keeps a screen's origin in native pixels and scales only its size
             rect = (geo.x() + round(region.left() * k), geo.y() + round(region.top() * k), w, h)
-            self.backend = FfmpegX11(rect, Prefs.fps(), cursor, mic)
+            self.backend = FfmpegX11(rect, Prefs.fps(), cursor, mic, system)
         elif self.kind == "wf-recorder":
             rect = (geo.x() + round(region.left()), geo.y() + round(region.top()),
                     even(round(region.width())), even(round(region.height())))
-            self.backend = WfRecorder(rect, mic)
+            self.backend = WfRecorder(rect, mic, system)
         else:
             frac = (region.left() / size[0], region.top() / size[1], region.width() / size[0], region.height() / size[1])
-            self.backend = PortalGst(frac, Prefs.fps(), cursor, mic)
+            self.backend = PortalGst(frac, Prefs.fps(), cursor, mic, system)
         self.global_region = QRect(geo.x() + round(region.left()), geo.y() + round(region.top()),
                                    round(region.width()), round(region.height()))
-        if is_wayland():
-            QTimer.singleShot(150, self._prepare_and_go)  # after the picker is gone
-        else:
-            self.countdown = Countdown(self.global_region.center(), self._prepare_and_go)
-            self.countdown.show()
+        # the countdown (if any) ran in the picker; give the closed picker time to leave the screen so the
+        # compositor / X server has unmapped it before the first frame is grabbed (or the portal dialog shows)
+        QTimer.singleShot(150 if is_wayland() else 120, self._prepare_and_go)
 
     def _prepare_and_go(self) -> None:
         if not self.backend.prepare():
@@ -649,6 +825,8 @@ class Recorder(QObject):
         self.bar = ControlBar(self, can_pause=bool(which("ffmpeg")))
         self._place_bar()
         self.bar.show()
+        if self.backend.note:
+            toast(self.backend.note, seconds=6)
         self.timer.start(250)
         QTimer.singleShot(1200, self._check_alive)
 

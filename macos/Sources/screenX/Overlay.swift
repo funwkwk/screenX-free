@@ -42,6 +42,31 @@ enum Glass {
         return v
     }
 
+    /// Template image of a horizontal line `width` points thick, for the line-width menu.
+    static func lineImage(_ width: CGFloat) -> NSImage {
+        let img = NSImage(size: NSSize(width: 56, height: 18), flipped: false) { r in
+            let h = min(width, 14)
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: NSRect(x: 2, y: (r.height - h) / 2, width: r.width - 4, height: h), xRadius: h / 2, yRadius: h / 2).fill()
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
+    /// Filled colour dot with a light ring, for the colour button.
+    static func colourDot(_ color: NSColor) -> NSImage {
+        NSImage(size: NSSize(width: 20, height: 20), flipped: false) { r in
+            color.setFill()
+            NSBezierPath(ovalIn: r.insetBy(dx: 3, dy: 3)).fill()
+            let ring = NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1))
+            ring.lineWidth = 1.5
+            NSColor(white: 1, alpha: 0.9).setStroke()
+            ring.stroke()
+            return true
+        }
+    }
+
     static func separator() -> NSView {
         let v = NSView()
         v.wantsLayer = true
@@ -50,6 +75,29 @@ enum Glass {
         v.widthAnchor.constraint(equalToConstant: 1).isActive = true
         v.heightAnchor.constraint(equalToConstant: 18).isActive = true
         return v
+    }
+}
+
+/// Resize cursor for the edges being dragged (`top` / `bottom` as seen on screen).
+enum ResizeCursor {
+    static func make(left: Bool, right: Bool, top: Bool, bottom: Bool) -> NSCursor {
+        if #available(macOS 15.0, *) {
+            let pos: NSCursor.FrameResizePosition
+            switch (left, right, top, bottom) {
+            case (true, _, true, _): pos = .topLeft
+            case (true, _, _, true): pos = .bottomLeft
+            case (_, true, true, _): pos = .topRight
+            case (_, true, _, true): pos = .bottomRight
+            case (true, _, _, _): pos = .left
+            case (_, true, _, _): pos = .right
+            case (_, _, true, _): pos = .top
+            default: pos = .bottom
+            }
+            return NSCursor.frameResize(position: pos, directions: .all)
+        }
+        if (left || right) && !(top || bottom) { return .resizeLeftRight }
+        if (top || bottom) && !(left || right) { return .resizeUpDown }
+        return .crosshair
     }
 }
 
@@ -116,10 +164,11 @@ final class BarButton: NSButton {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for a in trackingAreas { removeTrackingArea(a) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil))
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways], owner: self, userInfo: nil))
     }
 
-    override func mouseEntered(with event: NSEvent) { hovering = true; refresh() }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
+    override func mouseEntered(with event: NSEvent) { hovering = true; refresh(); NSCursor.arrow.set() }
     override func mouseExited(with event: NSEvent) { hovering = false; refresh() }
 }
 
@@ -174,7 +223,7 @@ final class ClosureItem: NSMenuItem {
 /// points with a top-left origin.
 final class OverlayCanvas: NSView {
     enum Phase { case picking, markup }
-    private enum Drag { case none, select, resize, draw, erase, free }
+    private enum Drag { case none, select, resize, draw, erase, free, move }
 
     weak var owner: Overlay?
     var mode: SnipMode = .rectangle
@@ -187,10 +236,11 @@ final class OverlayCanvas: NSView {
     private var undoStack: [[Mark]] = []
     private var redoStack: [[Mark]] = []
     private var current: Mark?
-    var tool: Tool = .pen
-    var penColor = NSColor(hex: "#E81123") ?? .red
-    var highlighterColor = NSColor(hex: "#FCE100") ?? .yellow
-    var strokeWidth: CGFloat = 4
+    var tool: Tool = .move
+    var penColor = NSColor(hex: "#FF3B30") ?? .red
+    var highlighterColor = NSColor(hex: "#FFCC00") ?? .yellow
+    var strokeWidth: CGFloat = 3
+    private var startMarks: [Mark] = []
 
     var windows: [NSRect] = []
     private var hoverWindow: NSRect?
@@ -349,7 +399,7 @@ final class OverlayCanvas: NSView {
         if textMode { text = "Drag over the text to copy it  ·  Esc to cancel" }
         else {
             switch mode {
-            case .rectangle: text = "Drag to select an area  ·  Esc to cancel"
+            case .rectangle: text = "Drag to select an area  ·  Esc to close"
             case .window: text = "Click a window to capture it  ·  Esc to cancel"
             case .freeform: text = "Draw around the area to capture  ·  Esc to cancel"
             case .fullscreen: text = "Capturing the full screen…"
@@ -358,16 +408,50 @@ final class OverlayCanvas: NSView {
         pill(text, font: .systemFont(ofSize: 13, weight: .medium), centre: NSPoint(x: bounds.midX, y: bounds.height * 0.5))
     }
 
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .crosshair)
+    // ---- cursor: arrow over the bars and inside the area (move tool), resize arrows on the edges,
+    // crosshair where a drag picks a new area or draws
+
+    private func edgeHit(_ p: NSPoint, _ sel: NSRect) -> (l: Bool, r: Bool, t: Bool, b: Bool)? {
+        let s: CGFloat = 9
+        let nearL = abs(p.x - sel.minX) <= s, nearR = abs(p.x - sel.maxX) <= s
+        let nearT = abs(p.y - sel.minY) <= s, nearB = abs(p.y - sel.maxY) <= s
+        guard sel.insetBy(dx: -s, dy: -s).contains(p), nearL || nearR || nearT || nearB else { return nil }
+        return (nearL, nearR && !nearL, nearT, nearB && !nearT)
     }
+
+    private func cursor(at p: NSPoint) -> NSCursor {
+        switch drag {
+        case .move: return .closedHand
+        case .resize: return ResizeCursor.make(left: edges.l, right: edges.r, top: edges.t, bottom: edges.b)
+        case .select, .free, .draw, .erase: return .crosshair
+        case .none: break
+        }
+        if owner?.isOverControls(p) == true { return .arrow }
+        if phase == .markup, let sel = selection {
+            if let e = edgeHit(p, sel) { return ResizeCursor.make(left: e.l, right: e.r, top: e.t, bottom: e.b) }
+            if sel.contains(p) { return tool == .move ? .arrow : .crosshair }
+            return marks.isEmpty ? .crosshair : .arrow
+        }
+        if mode == .window && !textMode { return .arrow }
+        return .crosshair
+    }
+
+    private func updateCursor(_ event: NSEvent? = nil) {
+        let p: NSPoint
+        if let e = event { p = convert(e.locationInWindow, from: nil) }
+        else if let w = window { p = convert(w.mouseLocationOutsideOfEventStream, from: nil) }
+        else { return }
+        cursor(at: p).set()
+    }
+
+    override func cursorUpdate(with event: NSEvent) { updateCursor(event) }
 
     // ---- mouse
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for a in trackingAreas { removeTrackingArea(a) }
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .cursorUpdate, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
     }
 
     private func point(_ event: NSEvent) -> NSPoint {
@@ -375,7 +459,19 @@ final class OverlayCanvas: NSView {
         return NSPoint(x: min(max(p.x, 0), bounds.width), y: min(max(p.y, 0), bounds.height))
     }
 
+    /// Moves the area (and what is drawn on it) by the arrow keys.
+    func nudge(dx: CGFloat, dy: CGFloat) {
+        guard phase == .markup, let sel = selection else { return }
+        let ddx = min(max(dx, -sel.minX), bounds.width - sel.maxX)
+        let ddy = min(max(dy, -sel.minY), bounds.height - sel.maxY)
+        selection = sel.offsetBy(dx: ddx, dy: ddy)
+        marks = marks.map { $0.offsetBy(ddx, ddy) }
+        needsDisplay = true
+        owner?.selectionMoved()
+    }
+
     override func mouseMoved(with event: NSEvent) {
+        updateCursor(event)
         guard phase == .picking, mode == .window, !textMode else { return }
         let p = point(event)
         let h = windows.first { $0.contains(p) }
@@ -391,15 +487,18 @@ final class OverlayCanvas: NSView {
         let p = point(event)
         start = p
         if phase == .markup, let sel = selection {
-            let s: CGFloat = 9
-            let nearL = abs(p.x - sel.minX) <= s, nearR = abs(p.x - sel.maxX) <= s
-            let nearT = abs(p.y - sel.minY) <= s, nearB = abs(p.y - sel.maxY) <= s
-            if sel.insetBy(dx: -s, dy: -s).contains(p) && (nearL || nearR || nearT || nearB) {
+            if let e = edgeHit(p, sel) {
                 drag = .resize
                 startSel = sel
-                edges = (nearL, nearR && !nearL, nearT, nearB && !nearT)
+                edges = e
             } else if sel.contains(p) {
-                beginMark(p)
+                if tool == .move {
+                    drag = .move
+                    startSel = sel
+                    startMarks = marks
+                } else {
+                    beginMark(p)
+                }
             } else if marks.isEmpty {
                 // nothing drawn yet: dragging outside starts a new selection
                 phase = .picking
@@ -407,6 +506,7 @@ final class OverlayCanvas: NSView {
                 drag = .select
                 owner?.selectionCleared()
             }
+            updateCursor(event)
             needsDisplay = true
             return
         }
@@ -443,7 +543,7 @@ final class OverlayCanvas: NSView {
             current = Mark(kind: .line, points: [p, p], color: penColor, width: strokeWidth)
         case .arrow:
             current = Mark(kind: .arrow, points: [p, p], color: penColor, width: strokeWidth)
-        case .crop:
+        case .crop, .move:
             break
         }
         if current != nil { drag = .draw }
@@ -465,6 +565,12 @@ final class OverlayCanvas: NSView {
                 selection = r
                 owner?.selectionMoved()
             }
+        case .move:
+            let dx = min(max(p.x - start.x, -startSel.minX), bounds.width - startSel.maxX)
+            let dy = min(max(p.y - start.y, -startSel.minY), bounds.height - startSel.maxY)
+            selection = startSel.offsetBy(dx: dx, dy: dy)
+            marks = startMarks.map { $0.offsetBy(dx, dy) }
+            owner?.selectionMoved()
         case .draw:
             guard var m = current else { return }
             if m.kind == .pen || m.kind == .highlighter {
@@ -516,9 +622,17 @@ final class OverlayCanvas: NSView {
             } else {
                 freePath = []
             }
+        case .move, .resize:
+            if let s = selection {
+                let r = s.integral
+                let dx = r.minX - s.minX, dy = r.minY - s.minY
+                selection = r
+                if was == .move { marks = marks.map { $0.offsetBy(dx, dy) } }
+            }
         default:
             break
         }
+        updateCursor(event)
         needsDisplay = true
     }
 
@@ -536,7 +650,7 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
     static var current: Overlay?
     private static var starting = false
 
-    private enum Flyout { case ink, eraser, shapes }
+    private enum Flyout { case colours, eraser, shapes }
 
     private let window: KeyWindow
     private let root = FlippedView()
@@ -558,6 +672,8 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
     private var textButton: BarButton!
     private var toolButtons: [Tool: BarButton] = [:]
     private var shapesButton: BarButton!
+    private var colourButton: BarButton!
+    private var sizeButton: BarButton!
     private var undoButton: BarButton!
     private var redoButton: BarButton!
     private var shareButton: BarButton!
@@ -630,7 +746,9 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
             Mark(kind: .rectangle, points: [NSPoint(x: 560, y: 300), NSPoint(x: 800, y: 420)], color: .systemBlue, width: 4),
             Mark(kind: .highlighter, points: [NSPoint(x: 300, y: 300), NSPoint(x: 520, y: 300)], color: o.canvas.highlighterColor, width: 16),
         ]
-        o.toggleFlyout(.shapes)
+        o.canvas.tool = .pen
+        o.refreshTools()
+        o.toggleFlyout(.colours)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             if let rep = o.root.bitmapImageRepForCachingDisplay(in: o.root.bounds) {
@@ -701,6 +819,7 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
     private func close(reactivate: Bool = true) {
         if let m = keyMonitor { NSEvent.removeMonitor(m) }
         keyMonitor = nil
+        closeColourPanel()
         window.orderOut(nil)
         if Overlay.current === self { Overlay.current = nil }
         if reactivate, let app = previousApp, app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
@@ -736,7 +855,7 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
         snipButton = BarButton("camera.viewfinder", "Snip") { [weak self] in self?.setTextMode(false) }
         let record = BarButton("video", "Record the screen") { [weak self] in
             self?.close(reactivate: false)
-            AppDelegate.shared.startRecording()
+            AppDelegate.shared.recordFromSnip()
         }
         modeButton = BarButton(modeSymbol(canvas.mode), "Snip mode") { [weak self] in self?.showModeMenu() }
         let modeChevron = BarButton("chevron.down", "Snip mode", width: 22, size: 9) { [weak self] in self?.showModeMenu() }
@@ -772,11 +891,16 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
         restart()
     }
 
+    /// Back to the start: top toolbar only, ready to pick a new area. Closing a snip lands here, so a new
+    /// snip needs no Control-Shift-S.
     private func restart() {
         hideFlyout()
+        closeColourPanel()
         markupBar.isHidden = true
         canvas.reset()
         refreshTopBar()
+        window.makeFirstResponder(canvas)
+        NSCursor.crosshair.set()
     }
 
     private func showModeMenu() {
@@ -800,51 +924,68 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
     }
 
     private func buildMarkupBar() {
-        let captureButton = BarButton("checkmark", "Capture: copy and save (Command-Return)", title: "Capture") { [weak self] in self?.capture() }
+        let captureButton = BarButton("checkmark", "Capture: copy and save (Return)", title: "Capture") { [weak self] in self?.capture() }
         captureButton.accent = true
         var captureChevron: BarButton!
         captureChevron = BarButton("chevron.down", "More capture options", width: 22, size: 9) { [weak self] in
             self?.showCaptureMenu(from: captureChevron)
         }
-        shareButton = BarButton("square.and.arrow.up", "Share") { [weak self] in self?.share() }
-        let lens = BarButton("sparkle.magnifyingglass", "Search image with Google Lens") { [weak self] in self?.lens() }
 
         func toolButton(_ symbol: String, _ tip: String, _ tool: Tool) -> BarButton {
             let b = BarButton(symbol, tip) { [weak self] in self?.toolTapped(tool) }
             toolButtons[tool] = b
             return b
         }
-        let pen = toolButton("pencil.tip", "Pen (click again for colours and size)", .pen)
-        let hl = toolButton("highlighter", "Highlighter (click again for colours and size)", .highlighter)
-        let eraser = toolButton("eraser", "Eraser (click again to erase everything)", .eraser)
+        // Preview-style tool row: select / sketch / highlight / shapes / erase, then shape style (line width, colour)
+        let move = toolButton("cursorarrow", "Select: drag the area to move it (arrow keys nudge it)", .move)
+        let pen = toolButton("pencil.tip", "Pen", .pen)
+        let hl = toolButton("highlighter", "Highlighter", .highlighter)
         shapesButton = BarButton("square.on.circle", "Shapes") { [weak self] in self?.toggleFlyout(.shapes) }
+        let eraser = toolButton("eraser", "Eraser (click again to erase everything)", .eraser)
+        sizeButton = BarButton("lineweight", "Line width") { [weak self] in self?.showSizeMenu() }
+        colourButton = BarButton("circle.fill", "Colour") { [weak self] in self?.toggleFlyout(.colours) }
         undoButton = BarButton("arrow.uturn.backward", "Undo (Command-Z)") { [weak self] in self?.canvas.undo() }
         redoButton = BarButton("arrow.uturn.forward", "Redo (Shift-Command-Z)") { [weak self] in self?.canvas.redo() }
-        let discard = BarButton("trash", "Discard snip (Esc)") { [weak self] in self?.cancel() }
+        shareButton = BarButton("square.and.arrow.up", "Share") { [weak self] in self?.share() }
+        let lens = BarButton("sparkle.magnifyingglass", "Search image with Google Lens") { [weak self] in self?.lens() }
+        let discard = BarButton("trash", "Discard and pick another area (Esc)") { [weak self] in self?.restart() }
 
-        markupBar = bar([captureButton, captureChevron, shareButton, lens, Glass.separator(),
-                         pen, hl, eraser, shapesButton, Glass.separator(), undoButton, redoButton, Glass.separator(), discard])
+        markupBar = bar([captureButton, captureChevron, Glass.separator(),
+                         move, pen, hl, shapesButton, eraser, Glass.separator(), sizeButton, colourButton, Glass.separator(),
+                         undoButton, redoButton, Glass.separator(), shareButton, lens, Glass.separator(), discard])
         markupBar.isHidden = true
         root.addSubview(markupBar)
         refreshTools()
         historyChanged()
     }
 
+    private var currentColour: NSColor { canvas.tool == .highlighter ? canvas.highlighterColor : canvas.penColor }
+
     private func refreshTools() {
         for (tool, b) in toolButtons { b.active = canvas.tool == tool }
         shapesButton.active = [.rectangle, .ellipse, .line, .arrow].contains(canvas.tool)
         let symbols: [Tool: String] = [.rectangle: "rectangle", .ellipse: "circle", .line: "line.diagonal", .arrow: "arrow.up.right"]
         shapesButton.setSymbol(symbols[canvas.tool] ?? "square.on.circle")
+        colourButton.image = Glass.colourDot(currentColour)
     }
 
     private func toolTapped(_ tool: Tool) {
         if canvas.tool == tool {
-            toggleFlyout(tool == .eraser ? .eraser : .ink)
+            if tool == .eraser { toggleFlyout(.eraser) }
+            else if tool == .pen || tool == .highlighter { toggleFlyout(.colours) }
         } else {
             canvas.tool = tool
             hideFlyout()
             refreshTools()
         }
+    }
+
+    /// Picking a colour or width while the select / eraser tool is on switches to the pen, as Preview does.
+    private func ensureDrawingTool() {
+        if canvas.tool == .move || canvas.tool == .eraser {
+            canvas.tool = .pen
+        }
+        refreshTools()
     }
 
     func historyChanged() {
@@ -863,13 +1004,22 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
         markupBar.setFrameOrigin(NSPoint(x: x.rounded(), y: y.rounded()))
     }
 
+    /// True when `p` (canvas coordinates) is over one of the floating bars.
+    func isOverControls(_ p: NSPoint) -> Bool {
+        [topBar, markupBar, flyout].contains { v in
+            guard let v = v, !v.isHidden else { return false }
+            return v.frame.contains(p)
+        }
+    }
+
     // =================================================================== flyouts
 
+    /// Apple system colours, two rows of eight, like the colour popover in Preview.
     private static let palette: [String] = [
-        "#000000", "#3C3C3C", "#7A7A7A", "#BDBDBD", "#FFFFFF", "#7B1E1E", "#E81123", "#FF5C5C", "#FF8C00", "#FFB900",
-        "#FCE100", "#BAD80A", "#107C10", "#00CC6A", "#00B294", "#008272", "#00B7C3", "#0099BC", "#0078D7", "#4A90E2",
-        "#002050", "#5C2D91", "#8764B8", "#B4009E", "#E3008C", "#FF69B4", "#8E562E", "#C19A6B", "#567C73", "#486860",
+        "#000000", "#FFFFFF", "#8E8E93", "#FF3B30", "#FF9500", "#FFCC00", "#34C759", "#00C7BE",
+        "#30B0C7", "#5AC8FA", "#007AFF", "#5856D6", "#AF52DE", "#FF2D55", "#A2845E", "#1C3F94",
     ]
+    private static let widths: [CGFloat] = [1, 2, 3, 5, 8, 12, 18]
 
     func hideFlyout() {
         flyout?.removeFromSuperview()
@@ -911,10 +1061,24 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
                 row.addArrangedSubview(b)
             }
             column.addArrangedSubview(row)
-            addInkControls(to: column)
-        case .ink:
-            anchor = toolButtons[canvas.tool] ?? shapesButton
-            addInkControls(to: column)
+        case .colours:
+            anchor = colourButton
+            let chosen = currentColour.hexString
+            for r in 0..<2 {
+                let row = NSStackView()
+                row.spacing = 8
+                for c in 0..<8 {
+                    let color = NSColor(hex: Overlay.palette[r * 8 + c]) ?? .white
+                    let s = Swatch(color) { [weak self] picked in self?.pickColor(picked) }
+                    s.chosen = color.hexString == chosen
+                    swatches.append(s)
+                    row.addArrangedSubview(s)
+                }
+                column.addArrangedSubview(row)
+            }
+            column.addArrangedSubview(BarButton("paintpalette", "Show all colours", title: "More Colours…", size: 13) { [weak self] in
+                self?.showColourPanel()
+            })
         }
 
         let f = Glass.wrap(column, radius: 20)
@@ -928,42 +1092,52 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
         flyoutKind = kind
     }
 
-    private func label(_ text: String) -> NSTextField {
-        let l = NSTextField(labelWithString: text)
-        l.font = .systemFont(ofSize: 11, weight: .semibold)
-        l.textColor = NSColor(white: 1, alpha: 0.75)
-        return l
-    }
-
-    private func addInkControls(to column: NSStackView) {
-        column.addArrangedSubview(label("Colours"))
-        let chosen = (canvas.tool == .highlighter ? canvas.highlighterColor : canvas.penColor).hexString
-        for r in 0..<3 {
-            let row = NSStackView()
-            row.spacing = 6
-            for c in 0..<10 {
-                let color = NSColor(hex: Overlay.palette[r * 10 + c]) ?? .white
-                let s = Swatch(color) { [weak self] picked in self?.pickColor(picked) }
-                s.chosen = color.hexString == chosen
-                swatches.append(s)
-                row.addArrangedSubview(s)
+    private func showSizeMenu() {
+        hideFlyout()
+        let menu = NSMenu()
+        for w in Overlay.widths {
+            let item = ClosureItem("\(Int(w)) pt", mods: [], checked: canvas.strokeWidth == w) { [weak self] in
+                guard let self = self else { return }
+                self.canvas.strokeWidth = w
+                self.ensureDrawingTool()
             }
-            column.addArrangedSubview(row)
+            item.image = Glass.lineImage(w)
+            menu.addItem(item)
         }
-        column.addArrangedSubview(label("Size"))
-        let slider = NSSlider(value: Double(canvas.strokeWidth), minValue: 1, maxValue: 24, target: self, action: #selector(sizeChanged(_:)))
-        slider.translatesAutoresizingMaskIntoConstraints = false
-        slider.widthAnchor.constraint(equalToConstant: 10 * 22 + 9 * 6).isActive = true
-        column.addArrangedSubview(slider)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sizeButton.bounds.height + 10), in: sizeButton)
     }
 
     private func pickColor(_ color: NSColor) {
+        if canvas.tool == .move || canvas.tool == .eraser { canvas.tool = .pen }
         if canvas.tool == .highlighter { canvas.highlighterColor = color } else { canvas.penColor = color }
         for s in swatches { s.chosen = s.color.hexString == color.hexString }
+        refreshTools()
     }
 
-    @objc private func sizeChanged(_ sender: NSSlider) {
-        canvas.strokeWidth = CGFloat(sender.doubleValue.rounded())
+    private func showColourPanel() {
+        hideFlyout()
+        let p = NSColorPanel.shared
+        p.showsAlpha = false
+        p.isContinuous = true
+        p.color = currentColour
+        p.setTarget(self)
+        p.setAction(#selector(panelColour(_:)))
+        p.level = NSWindow.Level(rawValue: window.level.rawValue + 1)
+        p.orderFront(nil)
+    }
+
+    @objc private func panelColour(_ sender: NSColorPanel) {
+        pickColor(sender.color)
+    }
+
+    private func closeColourPanel() {
+        guard NSColorPanel.sharedColorPanelExists else { return }
+        let p = NSColorPanel.shared
+        guard p.isVisible else { return }
+        p.setTarget(nil)
+        p.setAction(nil)
+        p.orderOut(nil)
+        p.level = .floating
     }
 
     // =================================================================== canvas callbacks
@@ -996,12 +1170,24 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
     private func key(_ e: NSEvent) -> Bool {
         let cmd = e.modifierFlags.contains(.command)
         let markup = canvas.phase == .markup && canvas.selection != nil
-        if e.keyCode == 53 { // Esc
-            if flyout != nil { hideFlyout() } else { cancel() }
+        if e.keyCode == 53 { // Esc: closes the flyout, then the snip (back to the start toolbar), then screenX
+            if flyout != nil { hideFlyout() }
+            else if canvas.phase == .markup || canvas.selection != nil { restart() }
+            else { cancel() }
             return true
         }
         if e.keyCode == 36 || e.keyCode == 76 { // Return / Enter
             if markup { capture() }
+            return true
+        }
+        if markup && !cmd, [123, 124, 125, 126].contains(e.keyCode) { // arrows nudge the area (Shift: 10 points)
+            let step: CGFloat = e.modifierFlags.contains(.shift) ? 10 : 1
+            switch e.keyCode {
+            case 123: canvas.nudge(dx: -step, dy: 0)
+            case 124: canvas.nudge(dx: step, dy: 0)
+            case 125: canvas.nudge(dx: 0, dy: step)
+            default: canvas.nudge(dx: 0, dy: -step)
+            }
             return true
         }
         guard cmd, let ch = e.charactersIgnoringModifiers?.lowercased() else { return false }
@@ -1113,9 +1299,7 @@ final class Overlay: NSObject, NSSharingServicePickerDelegate {
     private func lens() {
         guard let img = output() else { return }
         close(reactivate: false)
-        ImageTools.copy(img)
-        if let url = URL(string: "https://www.google.com/?olud") { NSWorkspace.shared.open(url) }
-        Toast.show("Snip copied. Press Command-V in the Google Lens box to search with it.")
+        Lens.search(img)
     }
 
     private func extractText() {

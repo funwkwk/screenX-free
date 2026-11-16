@@ -7,22 +7,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var sampler: NSColorSampler?
+    /// Shortcut slots whose saved combination another app already owns (shown in Settings).
+    private(set) var takenShortcuts: Set<HotKey.Slot> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
         buildMainMenu()
         buildStatusItem()
-        let ok = HotKey.registerControlShiftS { [weak self] in self?.snip(Prefs.snipMode) }
-        Toast.show(ok ? "screenX is running. Press Control-Shift-S to snip, or use the menu-bar icon."
-                      : "screenX is running. Control-Shift-S is taken by another app; use the menu-bar icon.")
+        registerShortcuts()
+        if let sc = Prefs.snipShortcut {
+            Toast.show(takenShortcuts.contains(.snip)
+                ? "screenX is running. \(sc.display) is taken by another app; use the menu-bar icon or pick another shortcut in Settings."
+                : "screenX is running. Press \(sc.display) to snip, or use the menu-bar icon.")
+        } else {
+            Toast.show("screenX is running. Use the menu-bar icon to snip.")
+        }
         // same switches as the Windows build: screenX --snip | --fullscreen | --record | --color | --text
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--selftest"), i + 1 < args.count { Overlay.selfTest(URL(fileURLWithPath: args[i + 1])) }
+        else if let i = args.firstIndex(of: "--settingstest"), i + 1 < args.count {
+            // renders the whole Settings form (no scrolling) to a PNG and quits
+            let host = NSHostingView(rootView: SettingsView().frame(width: 620, height: 1700))
+            host.frame = NSRect(x: 0, y: 0, width: 620, height: 1700)
+            let w = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            w.contentView = host
+            w.appearance = NSAppearance(named: .darkAqua)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                    host.cacheDisplay(in: host.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: args[i + 1]))
+                }
+                NSApp.terminate(nil)
+            }
+        }
+        else if let i = args.firstIndex(of: "--countdowntest"), i + 1 < args.count {
+            MainActor.assumeIsolated { Recorder.countdownSnapshot(URL(fileURLWithPath: args[i + 1])) }
+        }
+        else if let i = args.firstIndex(of: "--recordtest"), i + 1 < args.count {
+            MainActor.assumeIsolated { RecordingEngine.selfTest(URL(fileURLWithPath: args[i + 1]), mic: args.contains("--mic")) }
+        }
         else if args.contains("--snip") { snip(Prefs.snipMode) }
         else if args.contains("--fullscreen") { snip(.fullscreen) }
         else if args.contains("--record") { startRecording() }
         else if args.contains("--color") { pickColour() }
         else if args.contains("--text") { extractText() }
+        else if args.contains("--settings") { openSettings() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -61,12 +90,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            if let img = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "screenX") {
+            // the screenX logo as a template image (MenuIcon.png + @2x in the bundle), so it follows the menu bar's tint
+            if let img = Bundle.main.image(forResource: "MenuIcon") {
+                img.isTemplate = true
+                img.size = NSSize(width: 18, height: 18)
+                img.accessibilityDescription = "screenX"
+                button.image = img
+            } else if let img = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "screenX") {
                 button.image = img
             } else {
                 button.title = "screenX"
             }
-            button.toolTip = "screenX — Control-Shift-S"
+            refreshStatusTip()
         }
         let m = NSMenu()
         func add(_ title: String, _ action: Selector, key: String = "", mods: NSEvent.ModifierFlags = []) {
@@ -92,6 +127,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = m
     }
 
+    // =================================================================== shortcuts
+
+    private func action(for slot: HotKey.Slot) -> () -> Void {
+        switch slot {
+        case .snip: return { [weak self] in self?.snip(Prefs.snipMode, delay: Prefs.snipDelay) }
+        case .record: return { [weak self] in self?.startRecording() }
+        }
+    }
+
+    private func saved(_ slot: HotKey.Slot) -> Shortcut? {
+        slot == .snip ? Prefs.snipShortcut : Prefs.recordShortcut
+    }
+
+    /// (Re-)registers both saved shortcuts.
+    func registerShortcuts() {
+        takenShortcuts = []
+        for slot in HotKey.Slot.allCases where !HotKey.register(slot, saved(slot), action: action(for: slot)) {
+            takenShortcuts.insert(slot)
+        }
+        refreshStatusTip()
+    }
+
+    /// Saves and registers a new shortcut for `slot` (nil = none). When another app owns the combination
+    /// the previous one stays and false is returned.
+    @discardableResult
+    func setShortcut(_ slot: HotKey.Slot, _ shortcut: Shortcut?) -> Bool {
+        let previous = saved(slot)
+        if HotKey.register(slot, shortcut, action: action(for: slot)) {
+            if slot == .snip { Prefs.snipShortcut = shortcut } else { Prefs.recordShortcut = shortcut }
+            takenShortcuts.remove(slot)
+            refreshStatusTip()
+            return true
+        }
+        if !HotKey.register(slot, previous, action: action(for: slot)) { takenShortcuts.insert(slot) }
+        return false
+    }
+
+    private func refreshStatusTip() {
+        guard let button = statusItem?.button else { return }
+        if let sc = Prefs.snipShortcut, !takenShortcuts.contains(.snip) {
+            button.toolTip = "screenX — \(sc.display) to snip"
+        } else {
+            button.toolTip = "screenX"
+        }
+    }
+
     // =================================================================== snipping
 
     /// Opens the snipping overlay. The finished snip is copied and auto-saved; it goes to `editor` when the
@@ -99,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func snip(_ mode: SnipMode, delay: Int = 0, into editor: EditorController? = nil) {
         if MainActor.assumeIsolated({ Recorder.current != nil }) { return }
         Overlay.start(mode: mode, delay: delay, onCapture: { image in
+            Shutter.play()
             ImageTools.copy(image)
             var url: URL?
             if Prefs.autoSave {
@@ -117,14 +199,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let where_ = url.map { " and saved to \($0.deletingLastPathComponent().lastPathComponent)" } ?? ""
             Toast.show("Snip copied\(where_). Click here to edit it.") {
-                EditorController(image: image, savedURL: url).show()
+                AppDelegate.shared.openInEditor(image, savedURL: url)
             }
         }, onCancel: {
             editor?.show() // cancelled with Esc: bring the editor back
         })
     }
 
-    @objc private func menuSnip() { snip(Prefs.snipMode) }
+    /// "Multiple windows" off: the snip replaces the one in the open editor (unless that one has unsaved
+    /// edits the user wants to be asked about). On: every snip gets its own window.
+    func openInEditor(_ image: NSImage, savedURL: URL?) {
+        if !Prefs.multipleWindows, let editor = EditorController.all.last, !(Prefs.askToSave && editor.isDirty) {
+            editor.load(image, savedURL: savedURL)
+            editor.show()
+        } else {
+            EditorController(image: image, savedURL: savedURL).show()
+        }
+    }
+
+    @objc private func menuSnip() { snip(Prefs.snipMode, delay: Prefs.snipDelay) }
     @objc private func menuWindowSnip() { snip(.window) }
     @objc private func menuFullSnip() { snip(.fullscreen) }
 
@@ -138,6 +231,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func startRecording() {
         MainActor.assumeIsolated { Recorder.start() }
+    }
+
+    /// Recording opened from the snip toolbar: closing it (before recording) goes back to that toolbar.
+    func recordFromSnip() {
+        MainActor.assumeIsolated { Recorder.start(backToSnip: true) }
     }
 
     @objc func pickColour() {

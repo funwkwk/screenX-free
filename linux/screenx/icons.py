@@ -185,6 +185,25 @@ def _mic_off(p, c):
     _line(p, 4, 4, 16, 16)
 
 
+def _speaker_body(p):
+    _poly(p, (3, 8), (6, 8), (10, 4.5), (10, 15.5), (6, 12), (3, 12), closed=True)
+
+
+def _speaker(p, c):
+    _speaker_body(p)
+    path = QPainterPath(QPointF(12.5, 7.5))
+    path.quadTo(14.3, 10, 12.5, 12.5)
+    p.drawPath(path)
+    path = QPainterPath(QPointF(14.5, 5))
+    path.quadTo(18.3, 10, 14.5, 15)
+    p.drawPath(path)
+
+
+def _speaker_off(p, c):
+    _speaker(p, c)
+    _line(p, 4, 4, 16, 16)  # crossed out like "mic-off"
+
+
 def _pause(p, c):
     _filled(p, c)
     p.drawRoundedRect(QRectF(5.5, 5, 3, 10), 1, 1)
@@ -238,6 +257,7 @@ _DRAW = {
     "eraser": _eraser, "shapes": _shapes, "ellipse": _ellipse, "line": _line_icon, "arrow": _arrow,
     "undo": _undo, "redo": _redo, "trash": _trash, "close": _close, "check": _check, "lens": _lens,
     "picker": _picker, "text": _text, "copy": _copy, "save": _save, "mic": _mic, "mic-off": _mic_off,
+    "speaker": _speaker, "speaker-off": _speaker_off,
     "pause": _pause, "play": _play, "stop": _stop, "dot": _dot, "settings": _settings, "crop": _crop,
     "plus": _plus, "chevron": _chevron, "folder": _folder,
 }

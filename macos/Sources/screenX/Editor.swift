@@ -21,7 +21,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     let window: NSWindow
     private let canvas = CanvasView()
     private let scroll = NSScrollView()
-    private let hint = NSTextField(labelWithString: "Press New or Control-Shift-S to start a snip.")
+    private let hint = NSTextField(labelWithString: "")
     private var savedURL: URL?
     private var dirty = false
     private var copyTimer: Timer?
@@ -37,6 +37,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     private var imageButtons: [NSControl] = []
 
     var hasImage: Bool { canvas.image != nil }
+    var isDirty: Bool { dirty && hasImage }
 
     init(image: NSImage?, savedURL: URL?) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
@@ -160,10 +161,11 @@ final class EditorController: NSObject, NSWindowDelegate {
         copy.keyEquivalent = "c"
         copy.keyEquivalentModifierMask = [.command, .shift]
         let share = button("square.and.arrow.up", "Share", #selector(shareImage(_:)))
+        let lens = button("sparkle.magnifyingglass", "Search image with Google Lens", #selector(searchLens))
         let settings = button("gearshape", "Settings", #selector(openSettings))
-        let right = NSStackView(views: [save, copy, share, settings])
+        let right = NSStackView(views: [save, copy, share, lens, settings])
         right.spacing = 6
-        var controls: [NSControl] = [save, copy, share, ocr, eraseAll, shapes, colorWell, sizeSlider]
+        var controls: [NSControl] = [save, copy, share, lens, ocr, eraseAll, shapes, colorWell, sizeSlider]
         controls.append(contentsOf: toolButtons)
         imageButtons = controls
 
@@ -215,6 +217,7 @@ final class EditorController: NSObject, NSWindowDelegate {
         let has = image != nil
         scroll.isHidden = !has
         hint.isHidden = has
+        hint.stringValue = Prefs.snipShortcut.map { "Press New or \($0.display) to start a snip." } ?? "Press New to start a snip."
         for c in imageButtons { c.isEnabled = has }
         refreshHistory()
         guard let image = image else { return }
@@ -306,7 +309,10 @@ final class EditorController: NSObject, NSWindowDelegate {
         Toast.show("Copied to clipboard")
     }
 
-    @objc private func saveAs() {
+    @objc private func saveAs() { save(then: nil) }
+
+    /// Save panel as a sheet; `then` runs after a successful save (used to close the window afterwards).
+    private func save(then: (() -> Void)?) {
         guard let img = canvas.flattened() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png, .jpeg]
@@ -319,6 +325,7 @@ final class EditorController: NSObject, NSWindowDelegate {
                 self?.savedURL = url
                 self?.dirty = false
                 self?.window.title = url.lastPathComponent
+                then?()
             } catch {
                 NSAlert(error: error).runModal()
             }
@@ -328,6 +335,11 @@ final class EditorController: NSObject, NSWindowDelegate {
     @objc private func shareImage(_ sender: NSButton) {
         guard let img = canvas.flattened() else { return }
         NSSharingServicePicker(items: [img]).show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    }
+
+    @objc private func searchLens() {
+        guard let img = canvas.flattened() else { return }
+        Lens.search(img)
     }
 
     @objc private func openSettings() {
@@ -355,7 +367,7 @@ final class EditorController: NSObject, NSWindowDelegate {
         alert.addButton(withTitle: "Cancel")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            saveAs()
+            save { [weak self] in self?.window.close() }
             return false
         case .alertSecondButtonReturn:
             return true
