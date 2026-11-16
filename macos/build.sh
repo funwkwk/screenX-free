@@ -27,6 +27,8 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET"
 # menu bar logo (template image)
 cp MenuIcon.png MenuIcon@2x.png "$APP/Contents/Resources/"
+# camera-shutter sound played when a snip is taken (shared with Windows and Linux)
+cp ../Assets/shutter.wav "$APP/Contents/Resources/"
 
 # Sign with a real identity when the Mac has one (SCREENX_SIGN_IDENTITY, else the first Developer ID / Apple
 # Development certificate). macOS ties the Screen Recording permission to the signature: an ad-hoc signature

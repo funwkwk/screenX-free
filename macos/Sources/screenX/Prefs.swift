@@ -18,6 +18,11 @@ enum Prefs {
         static let snipDelay = "snipDelay"
         static let snipMode = "snipMode"
         static let quickMarkup = "quickMarkup"
+        static let recordSystemAudio = "recordSystemAudio"
+        static let shutterSound = "shutterSound"
+        static let snipShortcut = "snipShortcut"
+        static let recordShortcut = "recordShortcut"
+        static let recordCountdown = "recordCountdown"
     }
 
     static let d = UserDefaults.standard
@@ -40,6 +45,11 @@ enum Prefs {
             Key.snipDelay: 0,
             Key.snipMode: "rectangle",
             Key.quickMarkup: true,
+            Key.recordSystemAudio: true,
+            Key.shutterSound: true,
+            Key.snipShortcut: Shortcut.defaultSnip.storage,
+            Key.recordShortcut: "",
+            Key.recordCountdown: 3,
         ])
     }
 
@@ -53,6 +63,22 @@ enum Prefs {
     static var recordMic: Bool {
         get { d.bool(forKey: Key.recordMic) }
         set { d.set(newValue, forKey: Key.recordMic) }
+    }
+    static var recordSystemAudio: Bool {
+        get { d.bool(forKey: Key.recordSystemAudio) }
+        set { d.set(newValue, forKey: Key.recordSystemAudio) }
+    }
+    /// Seconds of "3, 2, 1" before a recording starts (0 = none).
+    static var recordCountdown: Int { [0, 3, 5, 10].contains(d.integer(forKey: Key.recordCountdown)) ? d.integer(forKey: Key.recordCountdown) : 3 }
+    static var shutterSound: Bool { d.bool(forKey: Key.shutterSound) }
+    /// nil = no shortcut
+    static var snipShortcut: Shortcut? {
+        get { Shortcut(storage: d.string(forKey: Key.snipShortcut) ?? "") }
+        set { d.set(newValue?.storage ?? "", forKey: Key.snipShortcut) }
+    }
+    static var recordShortcut: Shortcut? {
+        get { Shortcut(storage: d.string(forKey: Key.recordShortcut) ?? "") }
+        set { d.set(newValue?.storage ?? "", forKey: Key.recordShortcut) }
     }
     static var showCursor: Bool { d.bool(forKey: Key.showCursor) }
     static var fps: Int { max(5, d.integer(forKey: Key.fps)) }

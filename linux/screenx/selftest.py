@@ -58,6 +58,8 @@ def run(qapp: QApplication, folder: str) -> int:
             lines.append(traceback.format_exc())
 
     Toast.quiet = True
+    from . import sound
+    sound.quiet = True
     Prefs.path = os.path.join(folder, "settings.json")
     Prefs.reset_cache()
     Prefs.set("screenshotFolder", os.path.join(folder, "shots"))
@@ -170,14 +172,30 @@ def run(qapp: QApplication, folder: str) -> int:
         from .settings import SettingsWindow
 
         class FakeApp:
-            hotkey_ok = True
+            hotkey_ok = {"snip": True, "record": True}
+            hotkeys = None
             def quit(self): pass
+            def apply_shortcut(self, name, text): return ""
 
         s = SettingsWindow(FakeApp())
         s.show()
         qapp.processEvents()
         s.grab().save(os.path.join(folder, "settings.png"))
+        s.countdown_combo.setCurrentIndex(s.countdown_combo.findData(5))
         s.close()
+        Prefs.reset_cache()
+        s2 = SettingsWindow(FakeApp())
+        check("countdown setting round-trips", Prefs.countdown() == 5 and s2.countdown_combo.currentData() == 5,
+              str(s2.countdown_combo.currentData()))
+        s2.close()
+        import json
+        with open(Prefs.file(), encoding="utf-8") as f:
+            stored = json.load(f)
+        stored.pop("recordCountdown", None)
+        with open(Prefs.file(), "w", encoding="utf-8") as f:
+            json.dump(stored, f)
+        Prefs.reset_cache()
+        check("missing countdown setting reads 3", Prefs.countdown() == 3 and Prefs.get("recordCountdown") == 3)
 
     def recorder_tests():
         from .recorder import ControlBar, PortalGst, RegionPicker, clock, even, ffmpeg_command
@@ -189,8 +207,22 @@ def run(qapp: QApplication, folder: str) -> int:
         picker._refresh()
         qapp.processEvents()
         picker.grab().save(os.path.join(folder, "record-setup.png"))
+        Prefs.set("recordCountdown", 3)
+        picker.start()
+        picker.count_anim.setCurrentTime(500)  # the number fully shown
+        qapp.processEvents()
+        picker.grab().save(os.path.join(folder, "countdown.png"))
+        check("countdown runs", picker.count == 3 and not started and picker.time.text() == "Starting in 3…"
+              and not picker.b_start.isVisible(), picker.time.text())
+        picker.start()
+        check("start again does nothing during the countdown", picker.count == 3 and not started)
+        picker.cancel()
+        check("countdown cancel returns to ready", picker.count == 0 and not picker.done and not started
+              and picker.b_start.isVisible() and not picker.count_timer.isActive())
+        Prefs.set("recordCountdown", 0)
         picker.start()
         check("record start callback", len(started) == 1 and started[0][0] == QRectF(300, 160, 641, 361))
+        Prefs.set("recordCountdown", 3)
 
         class FakeRecorder:
             def toggle_pause(self): pass
@@ -202,6 +234,27 @@ def run(qapp: QApplication, folder: str) -> int:
         qapp.processEvents()
         bar.grab().save(os.path.join(folder, "record-bar.png"))
         bar.close()
+        from .recorder import WfRecorder, gst_audio
+        picker = RegionPicker(None, fake_screen(1), lambda *a: None, lambda: None, "no sound server")
+        check("sound buttons disabled without a sound server",
+              not picker.b_mic.isEnabled() and not picker.b_system.isEnabled() and picker.b_system.toolTip() == "no sound server")
+        picker.close()
+        mon = "alsa_output.pci.analog-stereo.monitor"
+        sys_only = ffmpeg_command(":0", 0, 0, 640, 360, 30, False, False, "/tmp/o.mp4", mon)
+        check("ffmpeg command with system audio", sys_only.count("pulse") == 1 and mon in sys_only
+              and "-filter_complex" not in sys_only and "aac" in sys_only, " ".join(sys_only))
+        both = ffmpeg_command(":0", 0, 0, 640, 360, 30, False, True, "/tmp/o.mp4", mon)
+        fc = both[both.index("-filter_complex") + 1] if "-filter_complex" in both else ""
+        check("ffmpeg command with system audio and microphone", both.count("pulse") == 2 and "default" in both
+              and "amix=inputs=2" in fc and "[a]" in both, " ".join(both))
+        mixed = gst_audio(True, mon)
+        check("gstreamer sound mix", "audiomixer" in mixed and f"device={mon}" in mixed and mixed.count("pulsesrc") == 2
+              and mixed.count("amix.") == 2, " ".join(mixed))
+        check("gstreamer sound single", gst_audio(True, "") == ["pulsesrc", "!", "audioconvert", "!", "audioresample",
+                                                                 "!", "opusenc", "!", "queue", "!", "mux."])
+        wf = WfRecorder((0, 0, 640, 360), False, mon)
+        check("wf-recorder system audio", f"--audio={mon}" in wf.command("/tmp/o.mp4"))
+        check("wf-recorder microphone", "-a" in WfRecorder((0, 0, 640, 360), True, "").command("/tmp/o.mp4"))
         cmd = ffmpeg_command(":0", 300, 160, even(641), even(361), 30, True, False, "/tmp/out.mp4")
         check("ffmpeg command", cmd[cmd.index("-video_size") + 1] == "640x360" and ":0+300,160" in cmd and "pulse" not in cmd,
               " ".join(cmd))
@@ -212,6 +265,40 @@ def run(qapp: QApplication, folder: str) -> int:
         check("gstreamer command", "left=480" in gst and "top=270" in gst and "right=480" in gst and "bottom=270" in gst,
               " ".join(gst))
         check("clock", clock(3725) == "01:02:05")
+
+    def shortcut_tests():
+        from .hotkey import from_qt, gnome_accel, normalize, shortcut, x11_binding
+        check("shortcut default", shortcut("snip") == "Ctrl+Shift+S" and shortcut("record") == "")
+        check("shortcut normalize", normalize("shift+ctrl+s") == "Ctrl+Shift+S" and normalize("Meta+Alt+f5") == "Alt+Super+F5"
+              and normalize("Print") == "Print" and normalize("Ctrl+Shift+!") == "Ctrl+Shift+1"
+              and normalize("Ctrl++") == "Ctrl++", str([normalize("Meta+Alt+f5"), normalize("Ctrl+Shift+!")]))
+        check("shortcut needs a modifier", normalize("S") is None and normalize("Ctrl+Shift") is None and normalize("") is None)
+        check("shortcut to X11", x11_binding("Ctrl+Shift+S") == ("s", 5) and x11_binding("Super+Print") == ("Print", 64)
+              and x11_binding("Ctrl+Alt+PgDown") == ("Next", 12) and x11_binding("Alt+/") == ("slash", 8),
+              str([x11_binding("Ctrl+Shift+S"), x11_binding("Super+Print")]))
+        check("shortcut to GNOME", gnome_accel("Ctrl+Shift+S") == "<Control><Shift>s"
+              and gnome_accel("Ctrl+Alt+Super+R") == "<Control><Alt><Super>r" and gnome_accel("Print") == "Print",
+              gnome_accel("Ctrl+Alt+Super+R") or "")
+        m = Qt.KeyboardModifier
+        check("shortcut from key press", from_qt(int(Qt.Key.Key_S), m.ControlModifier | m.ShiftModifier) == "Ctrl+Shift+S"
+              and from_qt(int(Qt.Key.Key_Shift), m.ShiftModifier) is None
+              and from_qt(int(Qt.Key.Key_R), m.NoModifier) is None
+              and from_qt(int(Qt.Key.Key_Print), m.NoModifier) == "Print"
+              and from_qt(int(Qt.Key.Key_F9), m.MetaModifier) == "Super+F9",
+              str(from_qt(int(Qt.Key.Key_F9), m.MetaModifier)))
+        Prefs.set("recordShortcut", "nonsense+key")
+        check("damaged shortcut falls back", shortcut("record") == "")
+        Prefs.set("recordShortcut", "")
+
+    def sound_tests():
+        import wave
+        from .sound import shutter_path
+        path = shutter_path()
+        check("shutter sound found", path is not None, str(path))
+        if path:
+            with wave.open(path) as w:
+                check("shutter sound readable", w.getnframes() > 0 and w.getframerate() > 0,
+                      f"{w.getframerate()} Hz, {w.getnchannels()} channel(s)")
 
     def file_tests():
         img = fake_screen(1).copy(0, 0, 200, 120)
@@ -260,7 +347,8 @@ def run(qapp: QApplication, folder: str) -> int:
             os.remove(out)
 
     for name, fn in (("overlay", overlay_tests), ("canvas", canvas_tests), ("editor", editor_tests),
-                     ("settings", settings_tests), ("recorder", recorder_tests), ("files", file_tests),
+                     ("settings", settings_tests), ("recorder", recorder_tests), ("shortcuts", shortcut_tests),
+                     ("sound", sound_tests), ("files", file_tests),
                      ("ocr", ocr_tests), ("recording", record_tests)):
         step(name, fn)
 

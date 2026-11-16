@@ -21,7 +21,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     let window: NSWindow
     private let canvas = CanvasView()
     private let scroll = NSScrollView()
-    private let hint = NSTextField(labelWithString: "Press New or Control-Shift-S to start a snip.")
+    private let hint = NSTextField(labelWithString: "")
     private var savedURL: URL?
     private var dirty = false
     private var copyTimer: Timer?
@@ -217,6 +217,7 @@ final class EditorController: NSObject, NSWindowDelegate {
         let has = image != nil
         scroll.isHidden = !has
         hint.isHidden = has
+        hint.stringValue = Prefs.snipShortcut.map { "Press New or \($0.display) to start a snip." } ?? "Press New to start a snip."
         for c in imageButtons { c.isEnabled = has }
         refreshHistory()
         guard let image = image else { return }

@@ -17,6 +17,9 @@ struct SettingsView: View {
     @AppStorage(Prefs.Key.snipMode) private var snipMode = SnipMode.rectangle.rawValue
     @AppStorage(Prefs.Key.snipDelay) private var snipDelay = 0
     @AppStorage(Prefs.Key.recordMic) private var recordMic = false
+    @AppStorage(Prefs.Key.recordSystemAudio) private var recordSystemAudio = true
+    @AppStorage(Prefs.Key.shutterSound) private var shutterSound = true
+    @AppStorage(Prefs.Key.recordCountdown) private var recordCountdown = 3
     @AppStorage(Prefs.Key.showCursor) private var showCursor = true
     @AppStorage(Prefs.Key.fps) private var fps = 30
     @AppStorage(Prefs.Key.screenshotFolder) private var screenshotFolder = ""
@@ -40,6 +43,8 @@ struct SettingsView: View {
                     ForEach([0, 3, 5, 10], id: \.self) { Text($0 == 0 ? "No delay" : "\($0) seconds").tag($0) }
                 }
                 Toggle("Quick markup after a rectangle snip", isOn: $quickMarkup)
+                Toggle("Play a sound when taking a snip", isOn: $shutterSound)
+                    .onChange(of: shutterSound) { on in if on { Shutter.play() } }
                 Toggle("Automatically copy changes", isOn: $autoCopyChanges)
                 Toggle("Automatically save original screenshots", isOn: $autoSave)
                 Toggle("Ask to save edited screenshots", isOn: $askToSave)
@@ -71,11 +76,15 @@ struct SettingsView: View {
                 folderRow("Screenshots are saved to", path: $screenshotFolder, fallback: "Pictures/screenX")
             }
             Section("Screen recording") {
-                Toggle("Include microphone input by default when a screen recording starts", isOn: $recordMic)
+                Toggle("Record system audio (what's playing on this Mac)", isOn: $recordSystemAudio)
+                Toggle("Record microphone", isOn: $recordMic)
                     .onChange(of: recordMic) { on in if on { requestMic() } }
                 if recordMic && micAccess == .denied {
                     note("screenX may not use the microphone. Allow it in System Settings to record sound.",
                          button: "Open Settings", url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+                }
+                Picker("Countdown before recording", selection: $recordCountdown) {
+                    ForEach([0, 3, 5, 10], id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
                 }
                 Toggle("Show the mouse pointer in recordings", isOn: $showCursor)
                 Picker("Frame rate", selection: $fps) {
@@ -95,13 +104,8 @@ struct SettingsView: View {
                 }
             }
             Section("Shortcuts") {
-                LabeledContent("Open screenX") {
-                    if AppDelegate.shared.hotKeyRegistered {
-                        Text("Control-Shift-S")
-                    } else {
-                        Text("Control-Shift-S is used by another app").foregroundColor(.orange)
-                    }
-                }
+                LabeledContent("New snip") { ShortcutField(slot: .snip, defaultValue: Shortcut.defaultSnip) }
+                LabeledContent("Record screen") { ShortcutField(slot: .record, defaultValue: nil) }
                 Toggle("Start screenX when you log in", isOn: launchAtLogin)
                 if loginStatus == .requiresApproval {
                     note("Turn screenX on under Login Items in System Settings to finish.", button: "Open Login Items") {
@@ -227,6 +231,84 @@ struct SettingsView: View {
                     folderError = "screenX cannot save files in \(chosen.lastPathComponent). Choose another folder."
                 }
             }
+        }
+    }
+}
+
+/// Click, then press the new combination (Esc cancels). Saved and registered at once; when another app owns
+/// the combination the old one stays and a note says so.
+struct ShortcutField: View {
+    let slot: HotKey.Slot
+    let defaultValue: Shortcut?
+
+    @State private var current: Shortcut?
+    @State private var recording = false
+
+    init(slot: HotKey.Slot, defaultValue: Shortcut?) {
+        self.slot = slot
+        self.defaultValue = defaultValue
+        _current = State(initialValue: slot == .snip ? Prefs.snipShortcut : Prefs.recordShortcut)
+    }
+    @State private var monitor: Any?
+    @State private var problem: String?
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack(spacing: 6) {
+                Button(action: { recording ? stop() : start() }) {
+                    Text(recording ? "Press a shortcut…" : current?.display ?? "None")
+                        .foregroundColor(recording ? .accentColor : (current == nil ? .secondary : .primary))
+                        .frame(minWidth: 130)
+                }
+                .help(recording ? "Press the new key combination, or Esc to cancel" : "Click to record a new shortcut")
+                if current != defaultValue {
+                    Button("Reset") { apply(defaultValue) }.help("Back to \(defaultValue?.display ?? "no shortcut")")
+                }
+                if current != nil && defaultValue == nil {
+                    Button("Clear") { apply(nil) }
+                }
+            }
+            if let p = problem {
+                Text(p).font(.caption).foregroundColor(.orange)
+            } else if AppDelegate.shared.takenShortcuts.contains(slot), let c = current {
+                Text("\(c.display) is used by another app").font(.caption).foregroundColor(.orange)
+            }
+        }
+        .onDisappear { if recording { stop() } }
+    }
+
+    private func start() {
+        problem = nil
+        HotKey.suspendAll() // the old combinations must not fire while recording
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            let mods = e.modifierFlags.intersection([.command, .option, .control, .shift])
+            if e.keyCode == 53 && mods.isEmpty { stop(); return nil } // Esc
+            if let sc = Shortcut(event: e) { apply(sc) } else { NSSound.beep() }
+            return nil
+        }
+    }
+
+    private func stop() {
+        if let m = monitor { NSEvent.removeMonitor(m) }
+        monitor = nil
+        recording = false
+        AppDelegate.shared.registerShortcuts()
+    }
+
+    private func apply(_ sc: Shortcut?) {
+        stop()
+        problem = nil
+        let other: HotKey.Slot = slot == .snip ? .record : .snip
+        let otherShortcut = other == .snip ? Prefs.snipShortcut : Prefs.recordShortcut
+        if let sc = sc, sc == otherShortcut {
+            problem = "\(sc.display) is already the \(other == .snip ? "New snip" : "Record screen") shortcut"
+            return
+        }
+        if AppDelegate.shared.setShortcut(slot, sc) {
+            current = sc
+        } else if let sc = sc {
+            problem = "\(sc.display) is used by another app"
         }
     }
 }

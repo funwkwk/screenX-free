@@ -20,18 +20,18 @@ if [ "${1:-}" != "--no-deps" ]; then
   if command -v apt-get >/dev/null; then
     sudo apt-get update -qq || true
     install_packages "apt-get install -y" "python3 python3-pyqt6" \
-      "qt6-wayland python3-gi ffmpeg tesseract-ocr x11-utils wl-clipboard xdg-desktop-portal gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly"
+      "qt6-wayland python3-gi ffmpeg tesseract-ocr x11-utils wl-clipboard xdg-desktop-portal gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly pulseaudio-utils python3-pyqt6.qtmultimedia"
   elif command -v dnf >/dev/null; then
     install_packages "dnf install -y" "python3 python3-pyqt6" \
-      "qt6-qtwayland python3-gobject ffmpeg-free tesseract xprop xwininfo wl-clipboard gstreamer1-plugins-base-tools pipewire-gstreamer gstreamer1-plugins-good gstreamer1-plugin-openh264"
+      "qt6-qtwayland python3-gobject ffmpeg-free tesseract xprop xwininfo wl-clipboard gstreamer1-plugins-base-tools pipewire-gstreamer gstreamer1-plugins-good gstreamer1-plugin-openh264 pulseaudio-utils"
   elif command -v pacman >/dev/null; then
     install_packages "pacman -S --needed --noconfirm" "python python-pyqt6" \
-      "qt6-wayland python-gobject ffmpeg tesseract tesseract-data-eng xorg-xprop xorg-xwininfo wl-clipboard gst-plugin-pipewire gst-plugins-good gst-plugins-ugly"
+      "qt6-wayland python-gobject ffmpeg tesseract tesseract-data-eng xorg-xprop xorg-xwininfo wl-clipboard gst-plugin-pipewire gst-plugins-good gst-plugins-ugly libpulse qt6-multimedia"
   elif command -v zypper >/dev/null; then
     install_packages "zypper install -y" "python3 python3-PyQt6" \
-      "python3-gobject ffmpeg tesseract-ocr xprop xwininfo wl-clipboard gstreamer-plugin-pipewire gstreamer-plugins-good"
+      "python3-gobject ffmpeg tesseract-ocr xprop xwininfo wl-clipboard gstreamer-plugin-pipewire gstreamer-plugins-good pulseaudio-utils"
   else
-    echo "Unknown package manager. Install these yourself: Python 3 with PyQt6, ffmpeg, tesseract, wl-clipboard."
+    echo "Unknown package manager. Install these yourself: Python 3 with PyQt6, ffmpeg, tesseract, wl-clipboard, pactl."
   fi
 fi
 
@@ -50,6 +50,9 @@ chmod +x "$APP/run.sh"
 if [ -f ../Assets/screenX.png ]; then
   cp ../Assets/screenX.png "$APP/screenx/icon.png"
   cp ../Assets/screenX.png "$HOME/.local/share/icons/hicolor/256x256/apps/screenx.png"
+fi
+if [ -f ../Assets/shutter.wav ]; then
+  cp ../Assets/shutter.wav "$APP/screenx/shutter.wav"
 fi
 ln -sf "$APP/run.sh" "$HOME/.local/bin/screenx"
 

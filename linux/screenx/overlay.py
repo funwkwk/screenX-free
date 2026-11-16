@@ -13,6 +13,7 @@ from .canvas import (PALETTE, SHAPES, SIZES, Mark, draw_dim, draw_handles, draw_
                      extend_mark, new_mark, rect_from, resize_rect, worth_keeping)
 from .common import colour_formats, copy_image, copy_text, save_image, toast, with_border
 from .prefs import SNIP_MODES, Prefs, unique_file
+from .sound import play_shutter
 
 ACCENT = QColor("#4CC2FF")
 
@@ -732,6 +733,7 @@ class Overlay(QWidget):
         if img is None:
             return
         copy_image(img)
+        play_shutter()
         self.done = True
         self.close()
         toast("Snip copied to clipboard")
@@ -749,6 +751,7 @@ class Overlay(QWidget):
             path += ".png"
         if save_image(img, path):
             copy_image(img)
+            play_shutter()
             self.done = True
             self.close()
             toast("Snip saved and copied")

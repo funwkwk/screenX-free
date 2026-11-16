@@ -16,10 +16,12 @@ from . import __version__
 from .capture import GRAB_HELP, OCR_HELP, grab, recognize_text, screen_under_pointer, search_lens, window_rects
 from .common import copy_image, copy_text, icon_path, is_wayland, open_folder, save_image, toast, with_border
 from .editor import Editor, TextResult
-from .hotkey import SHORTCUT_TEXT, X11HotKey
+from .hotkey import (SHORTCUTS, X11HotKeys, gnome_shortcut_installed, normalize, set_gnome_shortcut, shortcut,
+                     sync_gnome_shortcuts, uses_gnome_shortcuts)
 from .overlay import Overlay
 from .prefs import Prefs, unique_file
 from .recorder import Recorder
+from .sound import play_shutter, preload as preload_sound
 
 USAGE = """screenX %s for Linux
 
@@ -50,10 +52,57 @@ class App(QObject):
         self.server.newConnection.connect(self._connection)
         self.server.listen(server_name)
 
-        self.hotkey = X11HotKey(lambda: self.snip(Prefs.snip_mode(), delay=int(Prefs.get("snipDelay"))), self)
-        self.hotkey_ok = self.hotkey.ok
+        self.hotkeys = X11HotKeys(self)
+        self.hotkey_ok = {}  # name -> False when another app holds that shortcut (X11)
+        for name in SHORTCUTS:
+            text = shortcut(name)
+            self.hotkey_ok[name] = self.hotkeys.register(name, text, self._shortcut_action(name)) \
+                if text and self.hotkeys.available else True
+        if uses_gnome_shortcuts():
+            QTimer.singleShot(2000, sync_gnome_shortcuts)
+        QTimer.singleShot(1500, preload_sound)
         self.tray = None
         self._build_tray()
+
+    # ================================================================ shortcuts
+
+    def _shortcut_action(self, name: str):
+        if name == "record":
+            return lambda: self.handle(["--record"])
+        return lambda: self.snip(Prefs.snip_mode(), delay=int(Prefs.get("snipDelay")))
+
+    def apply_shortcut(self, name: str, text: str) -> str:
+        """Saves and applies a shortcut from Settings ("" = none). Returns "" when it worked, otherwise why not
+        (nothing changes then)."""
+        key, _default, _option, _title = SHORTCUTS[name]
+        new = normalize(text) if text else ""
+        if new is None:
+            return f"{text} cannot be used as a shortcut."
+        for other, (_k, _d, _o, other_title) in SHORTCUTS.items():
+            if other != name and new and shortcut(other) == new:
+                return f"{new} is already the {other_title} shortcut."
+        old = shortcut(name)
+        if self.hotkeys.available:
+            if not self.hotkeys.register(name, new, self._shortcut_action(name)):
+                self.hotkeys.register(name, old, self._shortcut_action(name))
+                return f"{new} is used by another app."
+            self.hotkey_ok[name] = True
+        Prefs.set(key, new)
+        self._update_tooltip()
+        if uses_gnome_shortcuts() and not set_gnome_shortcut(name, new):
+            return "Saved, but the GNOME keyboard shortcut could not be changed."
+        return ""
+
+    def snip_shortcut_active(self) -> bool:
+        text = shortcut("snip")
+        if not text:
+            return False
+        return self.hotkey_ok.get("snip", True) if self.hotkeys.available else is_wayland()
+
+    def _update_tooltip(self) -> None:
+        if self.tray is not None:
+            text = shortcut("snip")
+            self.tray.setToolTip(f"screenX — {text} for a new snip" if self.snip_shortcut_active() else "screenX")
 
     # ================================================================ tray
 
@@ -77,7 +126,7 @@ class App(QObject):
         menu.addAction("Quit screenX", self.quit)
         self.tray_menu = menu
         self.tray = QSystemTrayIcon(self.icon, self)
-        self.tray.setToolTip("screenX")
+        self._update_tooltip()
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_clicked)
         self.tray.show()
@@ -106,7 +155,10 @@ class App(QObject):
         elif "--fullscreen" in args:
             self.snip("fullscreen")
         elif "--record" in args:
-            self.start_recording()
+            if Recorder.current is not None:
+                Recorder.current.stop_and_save()  # the record shortcut again stops the recording
+            else:
+                self.start_recording()
         elif "--color" in args or "--colour" in args:
             self.pick_colour()
         elif "--text" in args:
@@ -120,12 +172,17 @@ class App(QObject):
 
     def _welcome(self) -> None:
         where = "the tray icon" if self.tray is not None else "run screenx again to open the window"
-        if is_wayland():
-            toast(f"screenX is running. Use {where}; a {SHORTCUT_TEXT} shortcut can be added in Settings.", seconds=5)
-        elif self.hotkey_ok:
-            toast(f"screenX is running. Press {SHORTCUT_TEXT} to snip, or use {where}.", seconds=5)
+        text = shortcut("snip")
+        if not text:
+            toast(f"screenX is running. Use {where}; a snip shortcut can be set in Settings.", seconds=5)
+        elif is_wayland() and uses_gnome_shortcuts() and gnome_shortcut_installed("snip"):
+            toast(f"screenX is running. Press {text} to snip, or use {where}.", seconds=5)
+        elif is_wayland():
+            toast(f"screenX is running. Use {where}; a {text} shortcut can be added in Settings.", seconds=5)
+        elif self.hotkey_ok.get("snip", True) and self.hotkeys.available:
+            toast(f"screenX is running. Press {text} to snip, or use {where}.", seconds=5)
         else:
-            toast(f"screenX is running. {SHORTCUT_TEXT} is taken by another app; use {where}.", seconds=5)
+            toast(f"screenX is running. {text} is taken by another app; use {where}.", seconds=5)
 
     # ================================================================ snipping
 
@@ -162,6 +219,7 @@ class App(QObject):
 
     def _captured(self, image: QImage, editor) -> None:
         copy_image(image)
+        play_shutter()  # asynchronous: the picture is already taken
         path = None
         if Prefs.get("autoSave"):
             target = unique_file(Prefs.get("screenshotFolder"), "Screenshot", "png")
