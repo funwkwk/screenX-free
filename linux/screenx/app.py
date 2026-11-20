@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from . import __version__
 from .capture import GRAB_HELP, OCR_HELP, grab, recognize_text, screen_under_pointer, search_lens, window_rects
-from .common import copy_image, copy_text, icon_path, is_wayland, open_folder, save_image, toast, with_border
+from .common import copy_image, copy_text, icon_path, is_wayland, open_folder, save_image, toast, tray_icon_paths, with_border
 from .editor import Editor, TextResult
 from .hotkey import (SHORTCUTS, X11HotKeys, gnome_shortcut_installed, normalize, set_gnome_shortcut, shortcut,
                      sync_gnome_shortcuts, uses_gnome_shortcuts)
@@ -125,7 +125,10 @@ class App(QObject):
         menu.addSeparator()
         menu.addAction("Quit screenX", self.quit)
         self.tray_menu = menu
-        self.tray = QSystemTrayIcon(self.icon, self)
+        tray_icon = QIcon()
+        for path in tray_icon_paths():
+            tray_icon.addFile(path)
+        self.tray = QSystemTrayIcon(self.icon if tray_icon.isNull() else tray_icon, self)
         self._update_tooltip()
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_clicked)

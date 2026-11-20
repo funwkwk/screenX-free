@@ -37,6 +37,17 @@ def icon_path() -> str | None:
     return None
 
 
+def tray_icon_paths() -> list[str]:
+    """The per-size tray icons (frame + X on a blue circle), installed copy first, then the source tree."""
+    for folder in (os.path.join(PACKAGE_DIR, "tray"),
+                   os.path.join(os.path.dirname(os.path.dirname(PACKAGE_DIR)), "Assets", "tray")):
+        if os.path.isdir(folder):
+            files = [os.path.join(folder, f) for f in sorted(os.listdir(folder)) if f.endswith(".png")]
+            if files:
+                return files
+    return []
+
+
 def open_path(path: str) -> None:
     QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 

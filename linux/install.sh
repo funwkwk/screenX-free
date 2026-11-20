@@ -51,6 +51,9 @@ if [ -f ../Assets/screenX.png ]; then
   cp ../Assets/screenX.png "$APP/screenx/icon.png"
   cp ../Assets/screenX.png "$HOME/.local/share/icons/hicolor/256x256/apps/screenx.png"
 fi
+if [ -d ../Assets/tray ]; then
+  cp -R ../Assets/tray "$APP/screenx/tray"
+fi
 if [ -f ../Assets/shutter.wav ]; then
   cp ../Assets/shutter.wav "$APP/screenx/shutter.wav"
 fi
