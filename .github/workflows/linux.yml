@@ -1,6 +1,6 @@
 name: Linux self-test
 
-# Manual only for now (Actions > Run workflow): GitHub Actions is paused on this account.
+# Runs only when started by hand (Actions > Run workflow).
 # To build on every push again, put these lines back under "on:":
 #   push:
 #     paths:

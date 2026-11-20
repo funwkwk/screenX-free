@@ -22,7 +22,7 @@ macos/build/
 .swiftpm/
 .DS_Store
 
-# Local tooling for the maintainer (Claude Code skills, editor settings)
+# Local tooling of the maintainer
 .claude/
 
 # Logs and temp files
