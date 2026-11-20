@@ -21,7 +21,7 @@
     <PackageProjectUrl>https://funwkwk.my.id</PackageProjectUrl>
     <Description>screenX - open-source screen capture, recording, colour picker, OCR and markup tool.</Description>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/funwkwk/screenX</RepositoryUrl>
+    <RepositoryUrl>https://github.com/funwkwk/screenX-free</RepositoryUrl>
     <NoWarn>$(NoWarn);CA1416;WFO0003</NoWarn>
   </PropertyGroup>
 

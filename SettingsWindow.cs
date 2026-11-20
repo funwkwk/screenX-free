@@ -121,7 +121,7 @@ public sealed class SettingsWindow : Window
         Section("About this app");
         var v = Assembly.GetExecutingAssembly().GetName().Version;
         var about = new StackPanel { Orientation = Orientation.Horizontal };
-        about.Children.Add(Link("GitHub", "https://github.com/funwkwk/screenX"));
+        about.Children.Add(Link("GitHub", "https://github.com/funwkwk/screenX-free"));
         Card("", $"screenX {v?.Major}.{v?.Minor}.{v?.Build}", "Open-source screen capture, recording, colour picker, text extractor and markup tool. GPL-3.0 licence.", about);
 
         var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = page, Focusable = false };

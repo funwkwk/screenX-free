@@ -1,81 +1,125 @@
 # screenX
 
-by [funwkwk](https://funwkwk.my.id)
+by [funwkwk](https://funwkwk.my.id) · Licence: [GPL-3.0](LICENSE)
 
-screenX is an open-source screen capture tool. It works like the Windows Snipping Tool and adds screen recording,
-a colour picker, a text extractor (OCR), in-place markup and Google Lens image search.
+screenX is a free and open-source screen capture tool for **Windows, macOS and Linux**. It works like the
+Windows Snipping Tool and adds screen recording with sound, a colour picker, a text extractor (OCR),
+in-place markup and Google Lens image search.
 
-- **Windows 10 / 11**: available now (this repository)
-- **macOS**: planned
-- **Linux** (X11 and Wayland): in [`linux/`](linux/README.md)
+| Platform | Status | Written in | Folder |
+|---|---|---|---|
+| Windows 10 (2004+) / 11 | Stable | C# · .NET 10 · WPF | repository root |
+| macOS 13 Ventura+ (Apple silicon and Intel) | Preview | Swift · AppKit / SwiftUI | [`macos/`](macos) |
+| Linux (X11 and Wayland) | Preview | Python 3 · PyQt6 | [`linux/`](linux/README.md) |
 
-The source code is free software under the [GNU General Public License v3.0](LICENSE). Ready-to-install
-builds of screenX are offered as a paid download. Buying the installer supports development; you can
-always build screenX yourself from this source.
+The three versions are separate native apps. They share the same features, the same icons and the
+same shutter sound (`Assets/`), but no code.
+
+## Contents
+
+- [Features](#features)
+- [Tech stack](#tech-stack)
+- [Project structure](#project-structure)
+- [Build and run](#build-and-run)
+- [Usage (Windows)](#usage-windows)
+- [Data and privacy](#data-and-privacy)
+- [Contributing](#contributing)
+- [Third-party software](#third-party-software)
+- [License](#license)
 
 ## Features
 
-- Rectangle, window, full screen and freeform snips
-- In-place markup: pen, highlighter, eraser, shapes, emoji, undo/redo
-- Resizable selection after snipping, with corner and edge handles
-- Screen recording to MP4
-- Colour picker with magnifier (HEX, RGB, HSL)
-- Text extractor using the built-in Windows OCR
-- Google Lens image search and the Windows share sheet
-- Snips copied to the clipboard and auto-saved to `Pictures\screenX`
+- **Snips**: rectangle, window, full screen (all monitors) and freeform (transparent outside the shape),
+  with an optional delay
+- **Quick markup** right after a snip: pen, highlighter, eraser, shapes (rectangle, ellipse, line, arrow),
+  colour emoji, undo / redo; the selection stays resizable from its corners and edges
+- **Editor** for an existing snip: draw, copy, save as PNG / JPG / BMP and extract text
+- **Screen recording** of a region to MP4 (H.264), with optional system audio and microphone,
+  a 3-2-1 countdown, pause / resume and a choice of frame rate
+- **Colour picker** with a magnifier (HEX, RGB, HSL)
+- **Text extractor (OCR)** that copies the text in any part of the screen
+- **Google Lens** image search and the system share sheet
+- Snips are copied to the clipboard and auto-saved (`Pictures\screenX`, recordings in `Videos\screenX`)
+- Global shortcuts you can change (default **Ctrl + Shift + S**), tray / menu bar icon, start with the system
 
-## Usage
+## Tech stack
 
-Open screenX with **Ctrl + Shift + S**. Windows keeps its own **Win + Shift + S**, so both can be used side by side.
+### Windows (repository root)
 
-### Top toolbar
+| Part | Technology |
+|---|---|
+| Language and runtime | C# with nullable reference types, [.NET 10](https://dotnet.microsoft.com/) (`net10.0-windows10.0.19041.0`) |
+| User interface | WPF (XAML windows plus windows built in code); Windows Forms only for the tray icon |
+| Screen capture | Win32 GDI (`BitBlt`) through P/Invoke (`Native.cs`) |
+| Global shortcuts | Win32 `RegisterHotKey` (optionally also on the Print Screen key) |
+| Text extractor | Built-in Windows OCR (`Windows.Media.Ocr`, WinRT) using the OCR languages installed on the PC |
+| Colour emoji | Direct2D / DirectWrite through [Vortice.Direct2D1](https://github.com/amerkoleci/Vortice.Windows) |
+| Recording | Frames captured with GDI and piped into an external [FFmpeg](https://ffmpeg.org/) process (H.264 MP4) |
+| Recording sound | [NAudio](https://github.com/naudio/NAudio) (WASAPI loopback for system audio, microphone input), muxed with FFmpeg |
+| Share | Windows share sheet (`DataTransferManager`) |
+| Installer | No third-party tool: the self-contained single-file `screenX.exe` doubles as its own per-user setup program (`Installer.cs`, built by `build-installer.ps1`) |
+| Settings | JSON file in `%AppData%\screenX\settings.json` |
 
-`[ snip | record ]  [ snip mode ▾ ]  [ quick markup ]  |  [ colour picker ]  [ text extractor ]  |  [ × ]`
+### macOS ([`macos/`](macos))
 
-| Mode | How | Result |
-|---|---|---|
-| Rectangle | Drag an area | Markup bar (when quick markup is on), otherwise copied and saved to `Pictures\screenX` |
-| Window | Hover a window and click | The whole window is captured |
-| Full screen | Pick it from the snip mode menu | All monitors are captured |
-| Freeform | Draw any shape | PNG, transparent outside the shape |
-| Record | Drag an area, press **Start**, wait for the 3-2-1 countdown | MP4 (H.264) in `Videos\screenX`, file copied to the clipboard |
-| Colour picker | Click a pixel (arrows = 1 px, Shift + arrows = 10 px, Enter = pick) | HEX copied; HEX, RGB and HSL can be copied from the notification |
-| Text extractor | Drag over text | Text copied to the clipboard |
+| Part | Technology |
+|---|---|
+| Language and build | Swift 5.9 Swift Package (`Package.swift`), universal binary (arm64 + x86_64) |
+| User interface | AppKit, with SwiftUI for Settings |
+| Screen capture and recording | ScreenCaptureKit and AVFoundation |
+| Text extractor | Apple Vision framework |
+| Global shortcuts | Carbon `RegisterEventHotKey` |
+| Start at login | ServiceManagement |
+| Packaging | `macos/build.sh` builds `screenX.app` and a `.dmg`; built by GitHub Actions on every change (the app is not notarised) |
 
-In record mode the snip mode and quick markup buttons stay in place but are disabled, so the toolbar keeps its width.
+### Linux ([`linux/`](linux/README.md))
 
-### Markup bar (rectangle snips with quick markup on)
+| Part | Technology |
+|---|---|
+| Language and UI | Python 3 and PyQt6 (Qt 6) |
+| Screen capture | Qt screen grab on X11; on Wayland the XDG desktop portal (D-Bus via `python3-gi`) or `grim` |
+| Recording | FFmpeg on X11; GStreamer + PipeWire (or `wf-recorder`) on Wayland; sound via PulseAudio / PipeWire |
+| Text extractor | [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) |
+| Install | `linux/install.sh` (apt, dnf or pacman) into `~/.local/share/screenX` |
 
-The selection stays adjustable: drag any of the four corner brackets or the four edge bars to resize it.
-Anything already drawn stays where it is, and the capture uses the new size.
+See [linux/README.md](linux/README.md) for the full list of packages and the Wayland notes.
 
-`[ Capture ▾ ]  [ Share ]  [ Google Lens ]  |  [ Pen ] [ Highlighter ] [ Eraser ] [ Shapes ]  |  [ Undo ] [ Redo ]  |  [ Discard ]`
+### Continuous integration
 
-- **Capture ▾**: Capture (Ctrl + Enter), Save to (Ctrl + S), Copy only (Ctrl + C)
-- Click the active pen or highlighter to open **Colours** (30 colours) and **Size**
-- Click the active eraser for **Erase all mark-ups**
-- **Shapes** opens a second bar: emoji, Rectangle, Ellipse, Line, Arrow, **Fill** (or No fill) and **Outline** (colour and size). Hold Shift for a square or circle
-- Placed emoji can be moved, resized from the corners and rotated with the round button above them; Delete removes the selected emoji
-- **Share** opens the Windows share sheet
-- **Google Lens** opens Google's "Search any image with Google Lens" dialog in your browser and pastes the snip into it for you, so the results page shows your image. If the Google tab cannot be brought to the front, a notification lets you paste (Ctrl + V) or drag the image file in yourself
-- **Discard** (trash icon) or Esc closes the snip without saving
-- Ctrl + Z / Ctrl + Y undo and redo
+GitHub Actions (`.github/workflows/`):
 
-Clicking the "Snip copied" notification opens the **editor**: pen, highlighter, eraser, colours, size, undo,
-copy (Ctrl + C), save as PNG/JPG/BMP (Ctrl + S) and extract text.
+- `macos.yml` builds the macOS app on `macos-latest` and publishes the `.dmg` as the `macos-latest` pre-release
+- `linux.yml` runs the Linux self-test on a virtual X11 screen (Xvfb)
 
-### Tray icon
+## Project structure
 
-Left click starts a new snip. Right click opens the menu: full screen snip, screen record, colour picker,
-text extractor, screenshots and recordings folders, **Settings** (auto-save, cursor in recordings,
-recording frame rate, start with Windows) and Exit.
+```text
+screenX-free/
+├─ App.xaml(.cs)            Windows app entry point, command-line options, single-instance handling
+├─ OverlayWindow.xaml(.cs)  Snip / record / colour picker / text extractor overlay and markup bar
+├─ EditorWindow.xaml(.cs)   Editor for an existing snip
+├─ ScreenCapture.cs         GDI screen capture
+├─ Recording.cs             Screen recording (FFmpeg) and audio (NAudio)
+├─ OcrService.cs            Windows OCR
+├─ EmojiRenderer.cs         Colour emoji through Direct2D
+├─ GoogleLens.cs            Google Lens search
+├─ ShareHelper.cs           Windows share sheet
+├─ Hotkeys.cs, Native.cs    Global shortcuts and Win32 interop
+├─ Settings.cs, SettingsWindow.cs, Tray.cs, Toast.cs, TextResultWindow.cs, Util.cs
+├─ Installer.cs             Built-in per-user installer / uninstaller
+├─ SelfTest.cs              Automated self-test (--selftest)
+├─ screenX.csproj, app.manifest, build-installer.ps1
+├─ Assets/                  Icons and shutter sound shared by all platforms
+├─ macos/                   macOS version (Swift)
+├─ linux/                   Linux version (Python + PyQt6)
+└─ .github/workflows/       CI for macOS and Linux
+```
 
-Command line (also works while screenX is already running):
-`screenX.exe --snip | --fullscreen | --record | --color | --text | --background`
+## Build and run
 
-## Build from source
+### Windows
 
-Requirements: the .NET 10 SDK and Windows 10 version 2004 or later.
+Requirements: Windows 10 version 2004 or later and the [.NET 10 SDK](https://dotnet.microsoft.com/download).
 
 ```bash
 dotnet build -c Release
@@ -85,20 +129,38 @@ dotnet build -c Release
 bin/Release/net10.0-windows10.0.19041.0/screenX.exe
 ```
 
-Screen recording needs `ffmpeg`, either on `PATH` or as `ffmpeg.exe` next to `screenX.exe`:
+Screen recording needs FFmpeg, either on `PATH` or as `ffmpeg.exe` next to `screenX.exe`:
 
 ```bash
 winget install Gyan.FFmpeg
 ```
 
-The text extractor uses the Windows OCR languages installed on the PC (your profile languages, or English when none match).
+Build the single-file installer (`dist\screenX-Setup-<version>.exe`, no .NET needed on the target PC):
 
-Self-test (capture, OCR, colours, UI renders and a 2-second recording; writes images and a log to the folder):
-`screenX.exe --selftest <output-folder>`
+```bash
+powershell -ExecutionPolicy Bypass -File build-installer.ps1
+```
 
-## Linux
+Run the self-test (capture, OCR, colours, window renders and a 2-second recording; writes images and a
+log to the folder):
 
-The Linux version is a Python + PyQt6 app in [`linux/`](linux/README.md):
+```bash
+bin/Release/net10.0-windows10.0.19041.0/screenX.exe --selftest selftest-output
+```
+
+### macOS
+
+On a Mac with the Xcode command-line tools:
+
+```bash
+bash macos/build.sh
+```
+
+This creates `macos/build/screenX.app` and a `.dmg`. Ready-made `.dmg` files come from the
+`macos-latest` pre-release on GitHub. The app is not notarised, so the first time right-click screenX and
+choose **Open**. screenX asks for the **Screen Recording** permission (and Microphone, if you record it).
+
+### Linux
 
 ```bash
 bash linux/install.sh
@@ -108,23 +170,74 @@ bash linux/install.sh
 screenx
 ```
 
-See [linux/README.md](linux/README.md) for the packages it uses, the Wayland notes and the keyboard shortcut.
+Try it without installing (needs `python3-pyqt6`):
 
-## Notes
+```bash
+bash linux/run.sh
+```
 
-- Recordings have no audio yet (microphone or system sound).
-- Settings are stored in `%AppData%\screenX\settings.json`; Google Lens attempts are logged to `%AppData%\screenX\lens.log` (window titles only).
+## Usage (Windows)
+
+Open screenX with **Ctrl + Shift + S** (change it in Settings). Windows keeps its own **Win + Shift + S**,
+so both can be used side by side. Left-click the tray icon for a new snip, right-click it for the menu.
+
+| Mode | How | Result |
+|---|---|---|
+| Rectangle | Drag an area | Markup bar (when quick markup is on), otherwise copied and saved |
+| Window | Hover a window and click | The whole window is captured |
+| Full screen | Pick it from the snip mode menu | All monitors are captured |
+| Freeform | Draw any shape | PNG, transparent outside the shape |
+| Record | Drag an area, press **Start**, wait for the countdown | MP4 in `Videos\screenX`, file copied to the clipboard |
+| Colour picker | Click a pixel (arrows = 1 px, Shift + arrows = 10 px, Enter = pick) | HEX copied; HEX, RGB and HSL from the notification |
+| Text extractor | Drag over text | Text copied to the clipboard |
+
+Markup bar shortcuts: **Ctrl + Enter** capture, **Ctrl + S** save to, **Ctrl + C** copy only,
+**Ctrl + Z / Ctrl + Y** undo / redo, **Esc** discard. Hold **Shift** while drawing a shape for a square or circle.
+
+Command line (also works while screenX is already running, so the options can be bound to keys):
+
+```text
+screenX.exe --snip          new snip
+screenX.exe --fullscreen    full screen snip
+screenX.exe --record        screen recording
+screenX.exe --color         colour picker
+screenX.exe --text          text extractor
+screenX.exe --background    start in the tray without a window
+screenX.exe --uninstall     remove an installed copy
+```
+
+## Data and privacy
+
+screenX has no accounts, no telemetry and no analytics. Everything stays on your PC, except when you
+choose **Google Lens** (your snip is sent to Google in your browser) or **Share**.
+
+- Settings: `%AppData%\screenX\settings.json`
+- Google Lens attempts are logged to `%AppData%\screenX\lens.log` (window titles only)
+- Installed copy: `%LocalAppData%\Programs\screenX` (per user, no administrator rights)
+
+## Contributing
+
+Issues and pull requests are welcome.
+
+- Keep each platform native: Windows changes in the root, macOS in `macos/`, Linux in `linux/`.
+- Run the Windows self-test (`--selftest`) before sending a Windows change; the Linux self-test and the
+  macOS build run on GitHub Actions.
+- Do not commit build output (`bin/`, `obj/`, `dist/`, `macos/build/`); `.gitignore` already excludes it.
 
 ## Third-party software
 
-- [Vortice.Direct2D1](https://github.com/amerkoleci/Vortice.Windows) (MIT License) renders colour emoji with Direct2D.
-- [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) (GPL v3) and [Qt](https://www.qt.io/) (LGPL v3) are the
-  toolkit of the Linux version. They are **not** included in this repository; screenX uses the copy installed on the PC.
-- [Tesseract](https://github.com/tesseract-ocr/tesseract) (Apache License 2.0) reads the text for the Linux text
-  extractor. It is not included either.
-- [FFmpeg](https://ffmpeg.org/) is used for screen recording. It is **not** included in this repository; screenX runs
-  the copy installed on the PC. FFmpeg is licensed under the LGPL or GPL depending on the build, so any installer
-  that bundles `ffmpeg.exe` must follow the terms of that build's licence.
+None of these are copied into this repository. NuGet packages are downloaded when you build; the other
+programs are used from the copy installed on the PC.
+
+| Software | Used for | Licence |
+|---|---|---|
+| [NAudio](https://github.com/naudio/NAudio) | Recording sound on Windows | MIT |
+| [Vortice.Direct2D1](https://github.com/amerkoleci/Vortice.Windows) | Colour emoji on Windows | MIT |
+| [FFmpeg](https://ffmpeg.org/) | Screen recording (Windows, Linux X11) | LGPL or GPL, depending on the build |
+| [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) / [Qt](https://www.qt.io/) | Linux user interface | GPL v3 / LGPL v3 |
+| [Tesseract](https://github.com/tesseract-ocr/tesseract) | Linux text extractor | Apache 2.0 |
+
+An installer that bundles `ffmpeg.exe` must follow the licence of that FFmpeg build.
 
 ## License
 

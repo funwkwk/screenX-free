@@ -1,6 +1,30 @@
+# .NET build output
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+
+# Installer output (build-installer.ps1)
 dist/
+installers/
+
+# Python (Linux version)
 __pycache__/
 *.pyc
+.venv/
+
+# Swift / macOS build output
 macos/.build/
 macos/build/
-installers/
+.swiftpm/
+.DS_Store
+
+# Local tooling for the maintainer (Claude Code skills, editor settings)
+.claude/
+
+# Logs and temp files
+*.log
+Thumbs.db
