@@ -1,10 +1,12 @@
 name: Linux self-test
 
+# Manual only for now (Actions > Run workflow): GitHub Actions is paused on this account.
+# To build on every push again, put these lines back under "on:":
+#   push:
+#     paths:
+#       - 'linux/**'
+#       - '.github/workflows/linux.yml'
 on:
-  push:
-    paths:
-      - 'linux/**'
-      - '.github/workflows/linux.yml'
   workflow_dispatch:
 
 permissions:

@@ -70,7 +70,7 @@ same shutter sound (`Assets/`), but no code.
 | Text extractor | Apple Vision framework |
 | Global shortcuts | Carbon `RegisterEventHotKey` |
 | Start at login | ServiceManagement |
-| Packaging | `macos/build.sh` builds `screenX.app` and a `.dmg`; built by GitHub Actions on every change (the app is not notarised) |
+| Packaging | `macos/build.sh` builds `screenX.app` and a `.dmg`; built by GitHub Actions (the app is not notarised) |
 
 ### Linux ([`linux/`](linux/README.md))
 
@@ -86,7 +86,7 @@ See [linux/README.md](linux/README.md) for the full list of packages and the Way
 
 ### Continuous integration
 
-GitHub Actions (`.github/workflows/`):
+GitHub Actions (`.github/workflows/`), started by hand for now from **Actions → Run workflow**:
 
 - `macos.yml` builds the macOS app on `macos-latest` and publishes the `.dmg` as the `macos-latest` pre-release
 - `linux.yml` runs the Linux self-test on a virtual X11 screen (Xvfb)
@@ -221,7 +221,7 @@ Issues and pull requests are welcome.
 
 - Keep each platform native: Windows changes in the root, macOS in `macos/`, Linux in `linux/`.
 - Run the Windows self-test (`--selftest`) before sending a Windows change; the Linux self-test and the
-  macOS build run on GitHub Actions.
+  macOS build can be started from the Actions tab.
 - Do not commit build output (`bin/`, `obj/`, `dist/`, `macos/build/`); `.gitignore` already excludes it.
 
 ## Third-party software

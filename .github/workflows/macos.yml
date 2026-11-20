@@ -1,10 +1,12 @@
 name: macOS build
 
+# Manual only for now (Actions > Run workflow): GitHub Actions is paused on this account.
+# To build on every push again, put these lines back under "on:":
+#   push:
+#     paths:
+#       - 'macos/**'
+#       - '.github/workflows/macos.yml'
 on:
-  push:
-    paths:
-      - 'macos/**'
-      - '.github/workflows/macos.yml'
   workflow_dispatch:
 
 permissions:
